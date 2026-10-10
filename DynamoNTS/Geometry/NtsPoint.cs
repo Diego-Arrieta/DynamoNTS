@@ -1,28 +1,35 @@
-﻿using System;
-using Autodesk.DesignScript.Runtime;
+﻿using Autodesk.DesignScript.Runtime;
+using NetTopologySuite.Algorithm;
+using System;
+using System.Collections.Generic;
+using System.Linq;
+using System.Reflection.Metadata;
 using DynGeometry = Autodesk.DesignScript.Geometry;
-using NtsGeometry = NetTopologySuite.Geometries;
+using NtsGeometries = NetTopologySuite.Geometries;
 
 namespace Geometry
 {
     /// <summary>
     /// Represents a topological point from NetTopologySuite.
     /// </summary>
-    public class NtsPoint
+    public class NtsPoint : NtsGeometry
     {
         /// <summary>
         /// Internal NTS geometry.
         /// </summary>
         [IsVisibleInDynamoLibrary(false)]
-        internal NtsGeometry.Point InternalPoint { get; set; }
+        internal NtsGeometries.Point InternalPoint
+        {
+            get => (NtsGeometries.Point)InternalGeometry;
+            set => InternalGeometry = value;
+        }
 
         /// <summary>
         /// Internal constructor.
         /// </summary>
         [IsVisibleInDynamoLibrary(false)]
-        internal NtsPoint(NtsGeometry.Point point)
+        internal NtsPoint(NtsGeometries.Point point) : base(point)
         {
-            InternalPoint = point ?? throw new ArgumentNullException(nameof(point));
         }
 
         #region Create Nodes
@@ -36,9 +43,8 @@ namespace Geometry
         {
             if (point == null) throw new ArgumentNullException(nameof(point));
 
-            var coordinate = new NtsGeometry.CoordinateZ(point.X, point.Y, point.Z);
-
-            var ntsPoint = NtsGeometry.GeometryFactory.Default.CreatePoint(coordinate);
+            var coordinate = new NtsGeometries.CoordinateZ(point.X, point.Y, point.Z);
+            var ntsPoint = NtsGeometries.GeometryFactory.Default.CreatePoint(coordinate);
 
             return new NtsPoint(ntsPoint);
         }
@@ -52,8 +58,8 @@ namespace Geometry
         /// <returns name="NtsPoint">The topological point in NTS.</returns>
         public static NtsPoint ByCoordinates(double x, double y, double z = 0.0)
         {
-            var coordinate = new NtsGeometry.CoordinateZ(x, y, z);
-            var ntsPoint = NtsGeometry.GeometryFactory.Default.CreatePoint(coordinate);
+            var coordinate = new NtsGeometries.CoordinateZ(x, y, z);
+            var ntsPoint = NtsGeometries.GeometryFactory.Default.CreatePoint(coordinate);
 
             return new NtsPoint(ntsPoint);
         }

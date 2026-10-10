@@ -1,30 +1,35 @@
-﻿using System;
+﻿using Autodesk.DesignScript.Runtime;
+using NetTopologySuite.Algorithm;
+using System;
 using System.Collections.Generic;
 using System.Linq;
-using Autodesk.DesignScript.Runtime;
+using System.Reflection.Metadata;
 using DynGeometry = Autodesk.DesignScript.Geometry;
-using NtsGeometry = NetTopologySuite.Geometries;
+using NtsGeometries = NetTopologySuite.Geometries;
 
 namespace Geometry
 {
     /// <summary>
     /// Represents a topological line string (polyline) from NetTopologySuite.
     /// </summary>
-    public class NtsLineString
+    public class NtsLineString : NtsGeometry
     {
         /// <summary>
         /// Internal NTS geometry.
         /// </summary>
         [IsVisibleInDynamoLibrary(false)]
-        internal NtsGeometry.LineString InternalLineString { get; set; }
+        internal NtsGeometries.LineString InternalLineString
+        {
+            get => (NtsGeometries.LineString)InternalGeometry;
+            set => InternalGeometry = value;
+        }
 
         /// <summary>
         /// Internal constructor.
         /// </summary>
         [IsVisibleInDynamoLibrary(false)]
-        internal NtsLineString(NtsGeometry.LineString lineString)
+        internal NtsLineString(NtsGeometries.LineString lineString) : base(lineString)
         {
-            InternalLineString = lineString ?? throw new ArgumentNullException(nameof(lineString));
         }
 
         #region Create Nodes
@@ -41,13 +46,13 @@ namespace Geometry
             var ntsPoints = points.ToList();
             if (ntsPoints.Count < 2) throw new ArgumentException("A LineString requires at least 2 points.");
 
-            var coordinates = ntsPoints.Select(p => new NtsGeometry.CoordinateZ(p.X, p.Y, p.Z)).ToArray();
+            var coordinates = ntsPoints.Select(p => new NtsGeometries.CoordinateZ(p.X, p.Y, p.Z)).ToArray();
 
-            var cleanCoords = new NtsGeometry.CoordinateList(coordinates).ToCoordinateArray();
+            var cleanCoords = new NtsGeometries.CoordinateList(coordinates).ToCoordinateArray();
 
             if (cleanCoords.Length < 2) throw new ArgumentException("The provided points do not form a valid LineString after cleaning duplicates.");
 
-            var lineString = NtsGeometry.GeometryFactory.Default.CreateLineString(cleanCoords);
+            var lineString = NtsGeometries.GeometryFactory.Default.CreateLineString(cleanCoords);
             return new NtsLineString(lineString);
         }
 
@@ -60,31 +65,27 @@ namespace Geometry
         {
             if (polyCurve == null) throw new ArgumentNullException(nameof(polyCurve));
 
-            var coordinates = new List<NtsGeometry.Coordinate>();
+            var coordinates = new List<NtsGeometries.Coordinate>();
             var curves = polyCurve.Curves();
 
-            // Extract points along the curve while managing unmanaged memory (Dispose)
             foreach (var curve in curves)
             {
                 var start = curve.StartPoint;
-                coordinates.Add(new NtsGeometry.CoordinateZ(start.X, start.Y, start.Z));
+                coordinates.Add(new NtsGeometries.CoordinateZ(start.X, start.Y, start.Z));
 
-                // Crucial for Dynamo performance in Civil 3D
                 start.Dispose();
                 curve.Dispose();
             }
 
-            // Add the absolute end point
             var endPoint = polyCurve.EndPoint;
-            coordinates.Add(new NtsGeometry.CoordinateZ(endPoint.X, endPoint.Y, endPoint.Z));
+            coordinates.Add(new NtsGeometries.CoordinateZ(endPoint.X, endPoint.Y, endPoint.Z));
             endPoint.Dispose();
 
-            // Remove consecutive duplicates
-            var cleanCoords = new NtsGeometry.CoordinateList(coordinates.ToArray()).ToCoordinateArray();
+            var cleanCoords = new NtsGeometries.CoordinateList(coordinates.ToArray()).ToCoordinateArray();
 
             if (cleanCoords.Length < 2) throw new ArgumentException("PolyCurve must have at least 2 distinct vertices.");
 
-            var lineString = NtsGeometry.GeometryFactory.Default.CreateLineString(cleanCoords);
+            var lineString = NtsGeometries.GeometryFactory.Default.CreateLineString(cleanCoords);
             return new NtsLineString(lineString);
         }
 
@@ -98,19 +99,17 @@ namespace Geometry
         /// <returns name="PolyCurve">A native Dynamo PolyCurve.</returns>
         public DynGeometry.PolyCurve ToPolyCurve()
         {
-            var dynamoPoints = new List<DynGeometry.Point>();
+            var points = new List<DynGeometry.Point>();
 
             foreach (var coord in InternalLineString.Coordinates)
             {
-                // Protect against 2D planar results returning NaN elevation
                 double z = double.IsNaN(coord.Z) ? 0.0 : coord.Z;
-                dynamoPoints.Add(DynGeometry.Point.ByCoordinates(coord.X, coord.Y, z));
+                points.Add(DynGeometry.Point.ByCoordinates(coord.X, coord.Y, z));
             }
 
-            var polyCurve = DynGeometry.PolyCurve.ByPoints(dynamoPoints);
+            var polyCurve = DynGeometry.PolyCurve.ByPoints(points);
 
-            // Dispose intermediate points to free up Dynamo rendering memory
-            foreach (var pt in dynamoPoints)
+            foreach (var pt in points)
             {
                 pt.Dispose();
             }
