@@ -10,7 +10,7 @@ namespace ImportExport
     /// </summary>
     public static class WKT
     {
-        #region Actions
+        #region Action Node
 
         /// <summary>
         /// Creates an NtsGeometry from a Well-Known Text (WKT) string.

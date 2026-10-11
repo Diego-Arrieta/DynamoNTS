@@ -11,7 +11,7 @@ namespace ImportExport
     /// </summary>
     public static class GeoJSON
     {
-        #region Actions
+        #region Action Node
 
         /// <summary>
         /// Creates an NtsGeometry from a GeoJSON geometry string.
