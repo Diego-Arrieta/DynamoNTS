@@ -1,239 +1,231 @@
 ﻿using Autodesk.DesignScript.Runtime;
 using DynamoNTS.Features;
+using DynamoNTS.Fields;
 using DynamoNTS.Geometry;
 using DynamoNTS.Layers;
 using DynamoNTS.Projections;
 using NetTopologySuite.Features;
 using NetTopologySuite.IO.Esri;
+using NetTopologySuite.IO.Esri.Dbf;
+using NetTopologySuite.IO.Esri.Dbf.Fields;
+using NetTopologySuite.IO.Esri.Shapefiles.Writers;
 using System;
 using System.Collections.Generic;
 using System.IO;
 using System.Linq;
+using System.Text;
 
 namespace DynamoNTS.ImportExport
 {
     /// <summary>
-    /// Provides methods to import and export geometries, features, and layers using the ESRI Shapefile (.shp) format.
+    /// Provides methods to read and write ESRI Shapefile datasets (.shp, .dbf, .prj)
+    /// using the modern NetTopologySuite.IO.Esri engine.
     /// </summary>
     public static class Shapefile
     {
-        #region Read Nodes
+        #region Action Nodes
 
         /// <summary>
-        /// Reads all geometries from an ESRI Shapefile (.shp), ignoring database attributes.
+        /// Reads an ESRI Shapefile from disk, preserving its native CRS or reprojecting geometries if a target CRS is provided.
         /// </summary>
-        /// <param name="filePath">Full file path to the .shp file.</param>
-        /// <returns name="geometries">List of imported topological geometries.</returns>
-        public static List<NtsGeometry> FromFile(string filePath)
+        /// <param name="shpPath">Full path to the .shp file.</param>
+        /// <param name="crsOverride">Optional target Coordinate Reference System. If provided, layer geometries are reprojected.</param>
+        /// <returns name="layer">The loaded (and optionally reprojected) NtsLayer instance.</returns>
+        public static NtsLayer Read(
+            string shpPath,
+            [DefaultArgument("null")] CoordinateSystem? crsOverride = null)
         {
-            ValidatePathForRead(filePath);
+            if (string.IsNullOrWhiteSpace(shpPath))
+                throw new ArgumentException("Shapefile path cannot be null or empty.", nameof(shpPath));
 
-            var ntsGeometries = NetTopologySuite.IO.Esri.Shapefile.ReadAllGeometries(filePath);
-            var result = new List<NtsGeometry>();
+            if (!File.Exists(shpPath))
+                throw new FileNotFoundException($"Shapefile not found: '{shpPath}'");
 
-            foreach (var geom in ntsGeometries)
-            {
-                var wrapped = NtsGeometry.WrapGeometry(geom);
-                if (wrapped != null)
-                {
-                    result.Add(wrapped);
-                }
-            }
-
-            return result;
-        }
-
-        /// <summary>
-        /// Reads all features (geometries and .dbf attribute tables) from an ESRI Shapefile.
-        /// </summary>
-        /// <param name="filePath">Full file path to the .shp file.</param>
-        /// <returns name="features">List of imported NtsFeature entities.</returns>
-        public static List<NtsFeature> ReadFeatures(string filePath)
-        {
-            ValidatePathForRead(filePath);
-
-            var rawFeatures = NetTopologySuite.IO.Esri.Shapefile.ReadAllFeatures(filePath);
-            var result = new List<NtsFeature>();
-
-            foreach (var rawFeature in rawFeatures)
-            {
-                var feature = NtsFeature.FromNtsFeature(rawFeature);
-                if (feature != null)
-                {
-                    result.Add(feature);
-                }
-            }
-
-            return result;
-        }
-
-        /// <summary>
-        /// Reads an ESRI Shapefile into a complete NtsLayer, detecting associated projection (.prj) automatically if present.
-        /// </summary>
-        /// <param name="filePath">Full file path to the .shp file.</param>
-        /// <param name="overrideCRS">Optional coordinate system override. If null, attempts to read from the .prj file.</param>
-        /// <returns name="layer">The imported NtsLayer.</returns>
-        public static NtsLayer ReadLayer(string filePath, CoordinateSystem overrideCRS = null)
-        {
-            ValidatePathForRead(filePath);
-
-            var features = ReadFeatures(filePath);
-            string layerName = Path.GetFileNameWithoutExtension(filePath);
-
-            CoordinateSystem crs = overrideCRS;
-            if (crs == null)
-            {
-                string prjPath = Path.ChangeExtension(filePath, ".prj");
-                if (File.Exists(prjPath))
-                {
-                    try
-                    {
-                        crs = CoordinateSystem.ByPrjFile(prjPath);
-                    }
-                    catch
-                    {
-                        // Fallback if .prj cannot be parsed
-                        crs = null;
-                    }
-                }
-            }
-
-            return NtsLayer.ByFeatures(features, layerName, crs);
-        }
-
-        #endregion
-
-        #region Write Nodes
-
-        /// <summary>
-        /// Writes an NtsGeometry collection to an ESRI Shapefile (.shp) with a default incremental FID.
-        /// </summary>
-        /// <param name="filePath">Target destination file path (.shp extension).</param>
-        /// <param name="geometries">Collection of NtsGeometry entities to export.</param>
-        /// <returns name="filePath">The file path of the generated shapefile.</returns>
-        public static string ToFile(string filePath, IEnumerable<NtsGeometry> geometries)
-        {
-            if (geometries == null)
-                throw new ArgumentNullException(nameof(geometries));
-
-            filePath = PrepareDestinationPath(filePath);
-
-            var validGeometries = geometries
-                .Where(g => g?.InternalGeometry != null && !g.InternalGeometry.IsEmpty)
-                .ToList();
-
-            if (validGeometries.Count == 0)
-                throw new InvalidOperationException("The geometry collection contains no valid geometries to export.");
-
-            var features = new List<Feature>();
-            int fid = 1;
-
-            foreach (var geom in validGeometries)
-            {
-                var attributes = new AttributesTable
-                {
-                    { "FID", fid++ }
-                };
-                features.Add(new Feature(geom.InternalGeometry, attributes));
-            }
-
-            NetTopologySuite.IO.Esri.Shapefile.WriteAllFeatures(features, filePath);
-
-            return filePath;
-        }
-
-        /// <summary>
-        /// Writes a collection of NtsFeature entities to an ESRI Shapefile (.shp, .shx, and .dbf).
-        /// </summary>
-        /// <param name="filePath">Target destination file path (.shp extension).</param>
-        /// <param name="features">Collection of NtsFeature entities.</param>
-        /// <returns name="filePath">The file path of the generated shapefile.</returns>
-        public static string WriteFeatures(string filePath, IEnumerable<NtsFeature> features)
-        {
-            if (features == null)
-                throw new ArgumentNullException(nameof(features));
-
-            filePath = PrepareDestinationPath(filePath);
-
-            var validFeatures = features
-                .Where(f => f?.Geometry?.InternalGeometry != null && !f.Geometry.InternalGeometry.IsEmpty)
-                .Select(f => f.InternalFeature)
-                .ToList();
-
-            if (validFeatures.Count == 0)
-                throw new InvalidOperationException("The feature collection contains no valid geometries to export.");
-
-            NetTopologySuite.IO.Esri.Shapefile.WriteAllFeatures(validFeatures, filePath);
-
-            return filePath;
-        }
-
-        /// <summary>
-        /// Writes an entire NtsLayer to an ESRI Shapefile, generating .shp, .shx, .dbf, and the projection file (.prj) if CRS is defined.
-        /// </summary>
-        /// <param name="filePath">Target destination file path (.shp extension).</param>
-        /// <param name="layer">The NtsLayer to export.</param>
-        /// <returns name="filePath">The file path of the generated shapefile.</returns>
-        public static string WriteLayer(string filePath, NtsLayer layer)
-        {
-            if (layer == null)
-                throw new ArgumentNullException(nameof(layer));
-
-            string savedPath = WriteFeatures(filePath, layer.Features);
-
-            if (layer.CoordinateSystem?.InternalCRS != null)
+            // 1. Resolve native source Coordinate Reference System from .prj
+            CoordinateSystem? sourceCrs = null;
+            string prjPath = Path.ChangeExtension(shpPath, ".prj");
+            if (File.Exists(prjPath))
             {
                 try
                 {
-                    string prjPath = Path.ChangeExtension(savedPath, ".prj");
-                    string wkt = layer.CoordinateSystem.InternalCRS.WKT;
-                    if (!string.IsNullOrWhiteSpace(wkt))
-                    {
-                        File.WriteAllText(prjPath, wkt);
-                    }
+                    sourceCrs = CoordinateSystem.ByPrjFile(prjPath);
                 }
                 catch
                 {
-                    // Fail silently for .prj generation to not block main export
+                    sourceCrs = null;
                 }
             }
 
-            return savedPath;
+            // 2. Extract schema metadata directly from DBF column headers
+            var fields = new List<NtsField>();
+            using (var reader = NetTopologySuite.IO.Esri.Shapefile.OpenRead(shpPath))
+            {
+                foreach (var dbfField in reader.Fields)
+                {
+                    var fieldType = MapFieldType(dbfField.FieldType);
+                    fields.Add(NtsField.ByNameAndType(dbfField.Name, fieldType, dbfField.Length));
+                }
+            }
+            var schema = NtsSchema.ByFields(fields);
+
+            // 3. Read all spatial features with their attributes in native coordinates
+            var rawFeatures = NetTopologySuite.IO.Esri.Shapefile.ReadAllFeatures(shpPath);
+            var features = new List<NtsFeature>();
+
+            foreach (var rawFeature in rawFeatures)
+            {
+                if (rawFeature.Geometry == null || rawFeature.Geometry.IsEmpty) continue;
+
+                var wrappedGeom = NtsGeometry.WrapGeometry(rawFeature.Geometry);
+                if (wrappedGeom == null) continue;
+
+                var table = new AttributesTable();
+                if (rawFeature.Attributes != null)
+                {
+                    foreach (var field in schema.Fields)
+                    {
+                        if (rawFeature.Attributes.Exists(field.Name))
+                        {
+                            var val = rawFeature.Attributes[field.Name];
+                            table.Add(field.Name, (val is DBNull) ? null : val);
+                        }
+                    }
+                }
+
+                var attrs = new NtsRecord(table, schema);
+                features.Add(new NtsFeature(rawFeature, wrappedGeom, attrs));
+            }
+
+            string layerName = Path.GetFileNameWithoutExtension(shpPath);
+            var nativeLayer = NtsLayer.ByFeatures(features, layerName, sourceCrs, schema);
+
+            // 4. Reproject if a new CRS is supplied
+            if (crsOverride != null)
+            {
+                if (sourceCrs != null)
+                {
+                    return nativeLayer.Reproject(crsOverride);
+                }
+
+                return NtsLayer.ByFeatures(features, layerName, crsOverride, schema);
+            }
+
+            return nativeLayer;
+        }
+
+        /// <summary>
+        /// Writes an NtsLayer to disk as an ESRI Shapefile (.shp, .shx, .dbf, and .prj).
+        /// </summary>
+        /// <param name="layer">The NtsLayer to export.</param>
+        /// <param name="shpPath">Target destination path (.shp).</param>
+        /// <returns name="success">True if export succeeded.</returns>
+        public static bool Write(NtsLayer layer, string shpPath)
+        {
+            if (layer == null) throw new ArgumentNullException(nameof(layer));
+            if (string.IsNullOrWhiteSpace(shpPath))
+                throw new ArgumentException("Destination file path cannot be null or empty.", nameof(shpPath));
+
+            if (layer.Count == 0)
+                throw new InvalidOperationException("Cannot write an empty layer to Shapefile.");
+
+            string? dir = Path.GetDirectoryName(shpPath);
+            if (!string.IsNullOrEmpty(dir) && !Directory.Exists(dir))
+            {
+                Directory.CreateDirectory(dir);
+            }
+
+            // 1. Determine ShapeType based on the layer geometries
+            var firstGeom = layer.Features.FirstOrDefault(f => f?.Geometry != null)?.Geometry;
+            if (firstGeom == null)
+                throw new InvalidOperationException("The layer does not contain valid geometries to export.");
+
+            var shapeType = ResolveShapeType(firstGeom);
+
+            // 2. Build DBF field definitions from the layer's formal schema
+            var dbfFields = new List<DbfField>();
+            foreach (var field in layer.Schema.Fields)
+            {
+                dbfFields.Add(CreateDbfField(field));
+            }
+
+            // 3. Write features using explicit ShapefileWriterOptions
+            var options = new ShapefileWriterOptions(shapeType, dbfFields.ToArray());
+            using (var writer = NetTopologySuite.IO.Esri.Shapefile.OpenWrite(shpPath, options))
+            {
+                foreach (var f in layer.Features)
+                {
+                    if (f?.Geometry == null) continue;
+
+                    var table = new AttributesTable();
+                    foreach (var field in layer.Schema.Fields)
+                    {
+                        object? val = f.GetValue(field.Name);
+                        table.Add(field.Name, (val is DBNull) ? null : val);
+                    }
+
+                    writer.Write(new Feature(f.Geometry.InternalGeometry, table));
+                }
+            }
+
+            // 4. Write projection file (.prj) if CRS is defined
+            if (layer.CoordinateSystem?.InternalCRS != null)
+            {
+                string prjPath = Path.ChangeExtension(shpPath, ".prj");
+                File.WriteAllText(prjPath, layer.CoordinateSystem.InternalCRS.WKT, Encoding.UTF8);
+            }
+
+            return true;
         }
 
         #endregion
 
-        #region Helper Methods
+        #region Helpers
 
-        private static void ValidatePathForRead(string filePath)
+        private static ShapeType ResolveShapeType(NtsGeometry geometry)
         {
-            if (string.IsNullOrWhiteSpace(filePath))
-                throw new ArgumentException("The file path cannot be null or whitespace.", nameof(filePath));
+            if (geometry is NtsPoint)
+                return ShapeType.Point;
 
-            if (!File.Exists(filePath))
-                throw new FileNotFoundException($"The shapefile was not found at: '{filePath}'");
+            if (geometry is NtsLineString)
+                return ShapeType.PolyLine;
 
-            if (!Path.GetExtension(filePath).Equals(".shp", StringComparison.OrdinalIgnoreCase))
-                throw new ArgumentException("The specified file must have a .shp extension.", nameof(filePath));
+            if (geometry is NtsPolygon)
+                return ShapeType.Polygon;
+
+            return ShapeType.Point;
         }
 
-        private static string PrepareDestinationPath(string filePath)
+        private static NtsFieldType MapFieldType(DbfType type)
         {
-            if (string.IsNullOrWhiteSpace(filePath))
-                throw new ArgumentException("The destination path cannot be null or whitespace.", nameof(filePath));
-
-            var directory = Path.GetDirectoryName(filePath);
-            if (!string.IsNullOrEmpty(directory) && !Directory.Exists(directory))
+            switch (type)
             {
-                Directory.CreateDirectory(directory);
+                case DbfType.Numeric:
+                case DbfType.Float:
+                    return NtsFieldType.Double;
+                case DbfType.Date:
+                    return NtsFieldType.Date;
+                case DbfType.Logical:
+                    return NtsFieldType.Boolean;
+                default:
+                    return NtsFieldType.String;
             }
+        }
 
-            if (!Path.GetExtension(filePath).Equals(".shp", StringComparison.OrdinalIgnoreCase))
+        private static DbfField CreateDbfField(NtsField field)
+        {
+            switch (field.Type)
             {
-                filePath = Path.ChangeExtension(filePath, ".shp");
+                case NtsFieldType.Integer:
+                    return new DbfNumericInt32Field(field.Name);
+                case NtsFieldType.Double:
+                    return new DbfNumericDoubleField(field.Name);
+                case NtsFieldType.Boolean:
+                    return new DbfLogicalField(field.Name);
+                case NtsFieldType.Date:
+                    return new DbfDateField(field.Name);
+                default:
+                    return new DbfCharacterField(field.Name, field.Length);
             }
-
-            return filePath;
         }
 
         #endregion

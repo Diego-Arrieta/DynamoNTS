@@ -4,7 +4,7 @@ using System.Linq;
 using System.Text;
 using System.Threading.Tasks;
 
-namespace DynamoNTS.Features
+namespace DynamoNTS.Fields
 {
     /// <summary>
     /// Represents standard GIS attribute data types.

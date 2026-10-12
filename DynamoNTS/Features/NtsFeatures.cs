@@ -1,4 +1,5 @@
 ﻿using Autodesk.DesignScript.Runtime;
+using DynamoNTS.Fields;
 using DynamoNTS.Geometry;
 using DynamoNTS.Layers;
 using NetTopologySuite.Features;
@@ -8,82 +9,101 @@ using System.Collections.Generic;
 namespace DynamoNTS.Features
 {
     /// <summary>
-    /// Represents a complete GIS feature combining topological geometry and tabular attributes.
+    /// Represents a complete GIS feature combining topological geometry with a structured alphanumeric record.
     /// </summary>
     public class NtsFeature
     {
-        /// <summary>
-        /// Internal NetTopologySuite Feature instance.
-        /// Hidden from the Dynamo user interface.
-        /// </summary>
         [IsVisibleInDynamoLibrary(false)]
-        internal Feature InternalFeature { get; }
+        internal IFeature InternalFeature { get; }
 
         /// <summary>
-        /// Gets the topological geometry associated with this feature.
+        /// Topological geometry associated with this feature.
         /// </summary>
         public NtsGeometry Geometry { get; }
 
         /// <summary>
-        /// Gets the attribute record associated with this feature.
+        /// Tabular alphanumeric record of attributes for this feature.
         /// </summary>
-        public NtsAttributes Attributes { get; }
+        public NtsRecord Record { get; }
+
+        /// <summary>
+        /// The formal attribute schema governing this feature.
+        /// </summary>
+        public NtsSchema Schema => Record.Schema;
 
         [IsVisibleInDynamoLibrary(false)]
-        internal NtsFeature(Feature feature, NtsGeometry geometry, NtsAttributes attributes)
+        internal NtsFeature(IFeature feature, NtsGeometry geometry, NtsRecord record)
         {
             InternalFeature = feature ?? throw new ArgumentNullException(nameof(feature));
             Geometry = geometry ?? throw new ArgumentNullException(nameof(geometry));
-            Attributes = attributes ?? NtsAttributes.Empty();
+            Record = record ?? NtsRecord.Empty();
         }
 
         #region Create Nodes
 
         /// <summary>
-        /// Creates an NtsFeature combining an NtsGeometry and an NtsAttributes record.
+        /// Creates a template feature using a geometry and a formal schema (fields initialized to null).
         /// </summary>
         /// <param name="geometry">The topological geometry.</param>
-        /// <param name="attributes">The attribute record.</param>
-        /// <returns name="feature">The resulting NtsFeature.</returns>
-        public static NtsFeature Create(NtsGeometry geometry, NtsAttributes attributes)
+        /// <param name="schema">The formal schema template.</param>
+        /// <returns name="feature">The newly initialized feature instance.</returns>
+        public static NtsFeature Create(NtsGeometry geometry, NtsSchema schema)
         {
             if (geometry == null) throw new ArgumentNullException(nameof(geometry));
+            if (schema == null) throw new ArgumentNullException(nameof(schema));
 
-            var attrs = attributes ?? NtsAttributes.Empty();
-            var ntsFeature = new Feature(geometry.InternalGeometry, attrs.InternalTable);
+            var record = NtsRecord.FromSchema(schema);
+            var ntsFeat = new Feature(geometry.InternalGeometry, record.InternalTable);
 
-            return new NtsFeature(ntsFeature, geometry, attrs);
+            return new NtsFeature(ntsFeat, geometry, record);
         }
 
         /// <summary>
-        /// Creates an NtsFeature from an NtsGeometry and a dictionary of properties.
+        /// Creates an NtsFeature combining a topological geometry with an existing NtsRecord.
         /// </summary>
         /// <param name="geometry">The topological geometry.</param>
-        /// <param name="properties">Dictionary containing attribute keys and values.</param>
-        /// <returns name="feature">The resulting NtsFeature.</returns>
-        public static NtsFeature ByGeometryAndDictionary(NtsGeometry geometry, IDictionary<string, object> properties)
+        /// <param name="record">The attribute record.</param>
+        /// <returns name="feature">The resulting NtsFeature instance.</returns>
+        public static NtsFeature ByRecord(NtsGeometry geometry, NtsRecord record)
         {
             if (geometry == null) throw new ArgumentNullException(nameof(geometry));
 
-            var attrs = properties != null ? NtsAttributes.FromDictionary(properties) : NtsAttributes.Empty();
-            return Create(geometry, attrs);
+            var rec = record ?? NtsRecord.Empty();
+            var ntsFeat = new Feature(geometry.InternalGeometry, rec.InternalTable);
+
+            return new NtsFeature(ntsFeat, geometry, rec);
         }
 
         /// <summary>
-        /// Creates an NtsFeature with a default integer FID attribute.
+        /// Creates a feature from a geometry and an explicit list of atomic NtsAttribute cells.
         /// </summary>
         /// <param name="geometry">The topological geometry.</param>
-        /// <param name="fid">Feature ID number.</param>
-        /// <returns name="feature">The resulting NtsFeature.</returns>
-        public static NtsFeature ByGeometryAndId(NtsGeometry geometry, int fid = 1)
+        /// <param name="attributes">Collection of NtsAttribute instances.</param>
+        /// <returns name="feature">The resulting NtsFeature instance.</returns>
+        public static NtsFeature ByAttributes(NtsGeometry geometry, IList<NtsAttribute> attributes)
         {
             if (geometry == null) throw new ArgumentNullException(nameof(geometry));
 
-            var field = NtsField.ByNameAndType("FID", NtsFieldType.Integer);
-            var schema = NtsSchema.ByFields(new[] { field });
-            var attrs = NtsAttributes.BySchemaAndValues(schema, new object[] { fid });
+            var record = NtsRecord.ByAttributes(attributes ?? new List<NtsAttribute>());
+            var ntsFeat = new Feature(geometry.InternalGeometry, record.InternalTable);
 
-            return Create(geometry, attrs);
+            return new NtsFeature(ntsFeat, geometry, record);
+        }
+
+        /// <summary>
+        /// Creates a feature from a geometry and a native Dynamo dictionary.
+        /// </summary>
+        /// <param name="geometry">The topological geometry.</param>
+        /// <param name="properties">Dictionary containing attribute key-value pairs.</param>
+        /// <returns name="feature">The resulting NtsFeature instance.</returns>
+        public static NtsFeature ByDictionary(NtsGeometry geometry, IDictionary<string, object?> properties)
+        {
+            if (geometry == null) throw new ArgumentNullException(nameof(geometry));
+
+            var record = properties != null ? NtsRecord.FromDictionary(properties) : NtsRecord.Empty();
+            var ntsFeat = new Feature(geometry.InternalGeometry, record.InternalTable);
+
+            return new NtsFeature(ntsFeat, geometry, record);
         }
 
         #endregion
@@ -91,56 +111,55 @@ namespace DynamoNTS.Features
         #region Action / Query Nodes
 
         /// <summary>
-        /// Gets an attribute value from the feature by column name.
+        /// Retrieves all atomic NtsAttribute cells from this feature.
         /// </summary>
-        /// <param name="fieldName">Field name.</param>
-        /// <returns name="value">The attribute value.</returns>
-        public object GetValue(string fieldName)
+        /// <returns name="attributes">List of NtsAttribute cells.</returns>
+        public List<NtsAttribute> GetAttributes()
         {
-            return Attributes?.GetValue(fieldName);
+            return Record.GetAttributes();
         }
 
         /// <summary>
-        /// Sets or updates an attribute value on the feature.
+        /// Retrieves an individual atomic NtsAttribute cell by column name or NtsField definition.
         /// </summary>
-        /// <param name="fieldName">Field name.</param>
-        /// <param name="value">Value to set.</param>
-        /// <returns name="feature">The updated NtsFeature.</returns>
-        public NtsFeature SetValue(string fieldName, object value)
+        /// <param name="field">Column name (string) or NtsField instance.</param>
+        /// <returns name="attribute">The queried NtsAttribute cell.</returns>
+        public NtsAttribute? GetAttribute(object field)
         {
-            Attributes?.SetValue(fieldName, value);
+            return Record.GetAttribute(field);
+        }
+
+        /// <summary>
+        /// Sets or updates an individual atomic NtsAttribute cell in this feature.
+        /// </summary>
+        /// <param name="attribute">The NtsAttribute cell to set.</param>
+        /// <returns name="feature">The updated NtsFeature instance.</returns>
+        public NtsFeature SetAttribute(NtsAttribute attribute)
+        {
+            Record.SetAttribute(attribute);
             return this;
         }
 
-        #endregion
-
-        #region Internal Factory
+        /// <summary>
+        /// Gets an attribute value by field name or NtsField definition.
+        /// </summary>
+        /// <param name="field">Column name (string) or NtsField instance.</param>
+        /// <returns name="value">The attribute value.</returns>
+        public object? GetValue(object field)
+        {
+            return Record.GetValue(field);
+        }
 
         /// <summary>
-        /// Converts a raw NetTopologySuite Feature into an NtsFeature.
+        /// Sets or updates an attribute value by field name or NtsField definition.
         /// </summary>
-        [IsVisibleInDynamoLibrary(false)]
-        internal static NtsFeature FromNtsFeature(Feature ntsFeature, NtsSchema schema = null)
+        /// <param name="field">Column name (string) or NtsField instance.</param>
+        /// <param name="value">The value to assign.</param>
+        /// <returns name="feature">The updated NtsFeature instance.</returns>
+        public NtsFeature SetValue(object field, object? value)
         {
-            if (ntsFeature == null) return null;
-
-            var geom = NtsGeometry.WrapGeometry(ntsFeature.Geometry);
-            if (geom == null) return null;
-
-            var table = ntsFeature.Attributes is AttributesTable at
-                ? at
-                : new AttributesTable();
-
-            if (table.Count == 0 && ntsFeature.Attributes != null)
-            {
-                foreach (var name in ntsFeature.Attributes.GetNames())
-                {
-                    table.Add(name, ntsFeature.Attributes[name]);
-                }
-            }
-
-            var attributes = new NtsAttributes(table, schema);
-            return new NtsFeature(ntsFeature, geom, attributes);
+            Record.SetValue(field, value);
+            return this;
         }
 
         #endregion

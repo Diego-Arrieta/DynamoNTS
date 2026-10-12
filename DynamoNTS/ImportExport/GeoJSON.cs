@@ -1,43 +1,139 @@
 ﻿using Autodesk.DesignScript.Runtime;
+using DynamoNTS.Features;
+using DynamoNTS.Fields;
 using DynamoNTS.Geometry;
+using DynamoNTS.Layers;
+using DynamoNTS.Projections;
+using NetTopologySuite.Features;
 using NetTopologySuite.IO;
 using System;
-using NtsGeometries = NetTopologySuite.Geometries;
+using System.Collections.Generic;
+using System.IO;
+using System.Linq;
+using NtsGeom = NetTopologySuite.Geometries.Geometry;
 
 namespace DynamoNTS.ImportExport
 {
     /// <summary>
-    /// Provides methods to import and export geometries in GeoJSON format.
+    /// Provides methods to import and export GeoJSON data for layers and isolated geometries.
     /// </summary>
     public static class GeoJSON
     {
-        #region Action Node
+        #region Layer Level (FeatureCollection)
 
         /// <summary>
-        /// Creates an NtsGeometry from a GeoJSON geometry string.
+        /// Reads a GeoJSON file or JSON string containing a FeatureCollection and builds an NtsLayer.
         /// </summary>
-        /// <param name="geoJson">The GeoJSON formatted string representing a geometry or feature.</param>
-        /// <returns name="geometry">The imported topological geometry.</returns>
-        public static NtsGeometry FromText(string geoJson)
+        /// <param name="filePathOrJson">Path to the .geojson file or direct JSON string.</param>
+        /// <param name="crsOverride">Optional Coordinate Reference System (defaults to WGS84 EPSG:4326).</param>
+        /// <returns name="layer">The reconstructed NtsLayer.</returns>
+        public static NtsLayer ReadLayer(
+            string filePathOrJson,
+            [DefaultArgument("null")] CoordinateSystem? crsOverride = null)
         {
-            if (string.IsNullOrWhiteSpace(geoJson))
-                throw new ArgumentException("GeoJSON string cannot be null or empty.", nameof(geoJson));
+            if (string.IsNullOrWhiteSpace(filePathOrJson))
+                throw new ArgumentException("Input path or GeoJSON text cannot be null or empty.", nameof(filePathOrJson));
+
+            string jsonContent = File.Exists(filePathOrJson)
+                ? File.ReadAllText(filePathOrJson)
+                : filePathOrJson;
 
             var reader = new GeoJsonReader();
-            var ntsGeometry = reader.Read<NtsGeometries.Geometry>(geoJson);
+            var featureCollection = reader.Read<FeatureCollection>(jsonContent);
 
-            return NtsGeometry.WrapGeometry(ntsGeometry);
+            if (featureCollection == null || featureCollection.Count == 0)
+                throw new InvalidOperationException("No features could be parsed from the provided GeoJSON.");
+
+            var features = new List<NtsFeature>();
+            var fieldsMap = new Dictionary<string, NtsField>(StringComparer.OrdinalIgnoreCase);
+
+            foreach (var f in featureCollection)
+            {
+                if (f.Geometry == null || f.Geometry.IsEmpty) continue;
+
+                var wrappedGeom = NtsGeometry.WrapGeometry(f.Geometry);
+                if (wrappedGeom == null) continue;
+
+                var table = new AttributesTable();
+                if (f.Attributes != null)
+                {
+                    foreach (var name in f.Attributes.GetNames())
+                    {
+                        var val = f.Attributes[name];
+                        table.Add(name, val);
+
+                        if (!fieldsMap.ContainsKey(name))
+                        {
+                            fieldsMap[name] = NtsField.ByNameAndType(name, NtsAttribute.InferType(val));
+                        }
+                    }
+                }
+
+                var concreteFeature = new Feature(f.Geometry, table);
+                var attrs = new NtsRecord(table, NtsSchema.Empty());
+                features.Add(new NtsFeature(concreteFeature, wrappedGeom, attrs));
+            }
+
+            var schema = NtsSchema.ByFields(fieldsMap.Values.ToList());
+            var crs = crsOverride ?? CoordinateSystem.WGS84;
+            string layerName = File.Exists(filePathOrJson) ? Path.GetFileNameWithoutExtension(filePathOrJson) : "GeoJsonLayer";
+
+            return NtsLayer.ByFeatures(features, layerName, crs, schema);
         }
 
         /// <summary>
-        /// Converts an NtsGeometry into its GeoJSON string representation.
+        /// Writes an NtsLayer to disk in GeoJSON FeatureCollection format.
         /// </summary>
-        /// <param name="geometry">The topological geometry to export.</param>
-        /// <returns name="geoJson">The GeoJSON text representation.</returns>
-        public static string ToText(NtsGeometry geometry)
+        /// <param name="layer">The NtsLayer to export.</param>
+        /// <param name="filePath">Target destination path (.geojson).</param>
+        /// <returns name="success">True if export succeeded.</returns>
+        public static bool WriteLayer(NtsLayer layer, string filePath)
         {
-            if (geometry == null)
-                throw new ArgumentNullException(nameof(geometry));
+            if (layer == null) throw new ArgumentNullException(nameof(layer));
+            if (string.IsNullOrWhiteSpace(filePath))
+                throw new ArgumentException("File path cannot be null or empty.", nameof(filePath));
+
+            string? dir = Path.GetDirectoryName(filePath);
+            if (!string.IsNullOrEmpty(dir) && !Directory.Exists(dir))
+            {
+                Directory.CreateDirectory(dir);
+            }
+
+            var writer = new GeoJsonWriter();
+            string json = writer.Write(layer.InternalCollection);
+
+            File.WriteAllText(filePath, json);
+            return true;
+        }
+
+        #endregion
+
+        #region Geometry Level (Isolated Geometry Text)
+
+        /// <summary>
+        /// Creates an NtsGeometry directly from an isolated GeoJSON geometry text fragment.
+        /// </summary>
+        /// <param name="jsonText">GeoJSON geometry text (e.g., {"type":"Point","coordinates":[0,0]}).</param>
+        /// <returns name="geometry">The imported NtsGeometry.</returns>
+        public static NtsGeometry? FromGeometry(string jsonText)
+        {
+            if (string.IsNullOrWhiteSpace(jsonText))
+                throw new ArgumentException("GeoJSON string cannot be null or empty.", nameof(jsonText));
+
+            var reader = new GeoJsonReader();
+            var ntsGeom = reader.Read<NtsGeom>(jsonText);
+
+            return NtsGeometry.WrapGeometry(ntsGeom);
+        }
+
+        /// <summary>
+        /// Converts an NtsGeometry into its isolated GeoJSON string representation.
+        /// </summary>
+        /// <param name="geometry">The topological geometry to serialize.</param>
+        /// <returns name="jsonText">The GeoJSON text representation.</returns>
+        public static string ToGeometry(NtsGeometry geometry)
+        {
+            if (geometry == null) throw new ArgumentNullException(nameof(geometry));
 
             var writer = new GeoJsonWriter();
             return writer.Write(geometry.InternalGeometry);

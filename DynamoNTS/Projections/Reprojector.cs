@@ -1,6 +1,7 @@
 ﻿using Autodesk.DesignScript.Runtime;
 using DynamoNTS.Features;
 using DynamoNTS.Geometry;
+using NetTopologySuite.Features;
 using NetTopologySuite.Geometries;
 using ProjNet.CoordinateSystems.Transformations;
 using System;
@@ -18,10 +19,10 @@ namespace DynamoNTS.Projections
         /// Reprojects an NtsGeometry from a source Coordinate Reference System to a target Coordinate Reference System.
         /// </summary>
         /// <param name="geometry">The topological geometry to reproject.</param>
-        /// <param name="source">The source coordinate system.</param>
-        /// <param name="target">The target coordinate system.</param>
-        /// <returns name="NtsGeometry">A new NtsGeometry reprojected into the target CRS.</returns>
-        public static NtsGeometry TransformGeometry(
+        /// <param name="source">The source coordinate reference system.</param>
+        /// <param name="target">The target coordinate reference system.</param>
+        /// <returns name="geometry">A new NtsGeometry reprojected into the target CRS, or null if geometry is empty.</returns>
+        public static NtsGeometry? TransformGeometry(
             NtsGeometry geometry,
             CoordinateSystem source,
             CoordinateSystem target)
@@ -30,7 +31,7 @@ namespace DynamoNTS.Projections
             if (source == null) throw new ArgumentNullException(nameof(source));
             if (target == null) throw new ArgumentNullException(nameof(target));
 
-            // Si ambos sistemas tienen el mismo EPSG no nulo, retorna una copia de la geometría
+            // If both systems share the same non-zero EPSG code, return a clone of the geometry
             if (source.EPSG != 0 && source.EPSG == target.EPSG)
             {
                 var cloneSame = (NetTopologySuite.Geometries.Geometry)geometry.InternalGeometry.Copy();
@@ -42,7 +43,7 @@ namespace DynamoNTS.Projections
                 source.InternalCRS,
                 target.InternalCRS);
 
-            // Clonar la geometría interna para evitar mutar el objeto original en memoria
+            // Clone internal geometry to avoid mutating the original instance in memory
             var cloned = (NetTopologySuite.Geometries.Geometry)geometry.InternalGeometry.Copy();
             var filter = new CoordinateTransformationFilter(transformation.MathTransform);
             cloned.Apply(filter);
@@ -60,9 +61,9 @@ namespace DynamoNTS.Projections
         /// Reprojects an entire NtsFeature, transforming its geometry while preserving all tabular attributes intact.
         /// </summary>
         /// <param name="feature">The GIS feature to reproject.</param>
-        /// <param name="source">The source coordinate system.</param>
-        /// <param name="target">The target coordinate system.</param>
-        /// <returns name="NtsFeature">A new NtsFeature with the reprojected geometry and original attributes.</returns>
+        /// <param name="source">The source coordinate reference system.</param>
+        /// <param name="target">The target coordinate reference system.</param>
+        /// <returns name="feature">A new NtsFeature with reprojected geometry and preserved attributes.</returns>
         public static NtsFeature TransformFeature(
             NtsFeature feature,
             CoordinateSystem source,
@@ -73,7 +74,13 @@ namespace DynamoNTS.Projections
             if (target == null) throw new ArgumentNullException(nameof(target));
 
             var reprojectedGeometry = TransformGeometry(feature.Geometry, source, target);
-            return NtsFeature.Create(reprojectedGeometry, feature.Attributes);
+            if (reprojectedGeometry == null)
+            {
+                throw new InvalidOperationException("Failed to reproject feature geometry.");
+            }
+
+            var concreteFeature = new Feature(reprojectedGeometry.InternalGeometry, feature.Record.InternalTable);
+            return new NtsFeature(concreteFeature, reprojectedGeometry, feature.Record);
         }
 
         /// <summary>
@@ -81,9 +88,9 @@ namespace DynamoNTS.Projections
         /// </summary>
         /// <param name="x">X / Easting / Longitude coordinate.</param>
         /// <param name="y">Y / Northing / Latitude coordinate.</param>
-        /// <param name="source">Source coordinate system.</param>
-        /// <param name="target">Target coordinate system.</param>
-        /// <returns name="double[]">An array containing the transformed [X, Y] coordinates.</returns>
+        /// <param name="source">Source coordinate reference system.</param>
+        /// <param name="target">Target coordinate reference system.</param>
+        /// <returns name="coordinates">An array containing the transformed [X, Y] coordinates.</returns>
         public static double[] TransformPoint(
             double x,
             double y,
