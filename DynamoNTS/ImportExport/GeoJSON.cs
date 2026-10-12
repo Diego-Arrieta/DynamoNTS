@@ -1,10 +1,10 @@
 ﻿using Autodesk.DesignScript.Runtime;
-using Geometry;
+using DynamoNTS.Geometry;
 using NetTopologySuite.IO;
 using System;
 using NtsGeometries = NetTopologySuite.Geometries;
 
-namespace ImportExport
+namespace DynamoNTS.ImportExport
 {
     /// <summary>
     /// Provides methods to import and export geometries in GeoJSON format.

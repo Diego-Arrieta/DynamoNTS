@@ -7,7 +7,7 @@ using System.Reflection.Metadata;
 using DynGeometry = Autodesk.DesignScript.Geometry;
 using NtsGeometries = NetTopologySuite.Geometries;
 
-namespace Geometry
+namespace DynamoNTS.Geometry
 {
     /// <summary>
     /// Abstract base class for all topological geometries from NetTopologySuite in Dynamo.

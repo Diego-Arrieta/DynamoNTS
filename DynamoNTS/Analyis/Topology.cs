@@ -4,9 +4,9 @@ using System;
 using System.Collections.Generic;
 using System.Linq;
 using System.Reflection.Metadata;
-using Geometry;
+using DynamoNTS.Geometry;
 
-namespace Analysis
+namespace DynamoNTS.Analysis
 {
     /// <summary>
     /// Topological relational boolean operators (True/False) powered by NetTopologySuite.

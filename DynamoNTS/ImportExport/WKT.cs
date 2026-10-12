@@ -1,9 +1,9 @@
 ﻿using Autodesk.DesignScript.Runtime;
-using Geometry;
+using DynamoNTS.Geometry;
 using NetTopologySuite.IO;
 using System;
 
-namespace ImportExport
+namespace DynamoNTS.ImportExport
 {
     /// <summary>
     /// Provides methods to import and export geometries in Well-Known Text (WKT) format.

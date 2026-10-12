@@ -7,7 +7,7 @@ using System.Reflection.Metadata;
 using DynGeometry = Autodesk.DesignScript.Geometry;
 using NtsGeometries = NetTopologySuite.Geometries;
 
-namespace Geometry
+namespace DynamoNTS.Geometry
 {
     /// <summary>
     /// Represents a topological point from NetTopologySuite.

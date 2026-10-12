@@ -1,0 +1,23 @@
+<?xml version="1.0"?>
+<doc>
+  <assembly>
+    <name>DynamoNTS</name>
+  </assembly>
+  <namespaces>
+    <namespace name="DynamoNTS.Geometry">
+      <category>DynamoNTS.Geometry</category>
+    </namespace>
+    <namespace name="DynamoNTS.Analysis">
+      <category>DynamoNTS.Analysis</category>
+    </namespace>
+    <namespace name="DynamoNTS.ImportExport">
+      <category>DynamoNTS.ImportExport</category>
+    </namespace>
+    <namespace name="DynamoNTS.Projections">
+      <category>DynamoNTS.Projections</category>
+    </namespace>
+    <namespace name="DynamoNTS.Features">
+      <category>DynamoNTS.Features</category>
+    </namespace>
+  </namespaces>
+</doc>
