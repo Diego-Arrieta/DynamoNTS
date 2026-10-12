@@ -45,7 +45,7 @@ namespace DynamoNTS.Layers
         public static NtsSchema ByFields(IList<NtsField> fields)
         {
             if (fields == null || fields.Count == 0)
-                throw new ArgumentException("Schema must contain at least one field definition.", nameof(fields));
+                return NtsSchema.Empty();
 
             var distinctFields = new List<NtsField>();
             var registeredNames = new HashSet<string>(StringComparer.OrdinalIgnoreCase);

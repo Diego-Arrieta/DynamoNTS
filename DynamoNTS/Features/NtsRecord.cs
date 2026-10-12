@@ -102,6 +102,7 @@ namespace DynamoNTS.Features
         public static NtsRecord FromDictionary(IDictionary<string, object?> dictionary)
         {
             if (dictionary == null) throw new ArgumentNullException(nameof(dictionary));
+            if (dictionary.Count == 0) return NtsRecord.Empty();
 
             var table = new AttributesTable();
             var fields = new List<NtsField>();
