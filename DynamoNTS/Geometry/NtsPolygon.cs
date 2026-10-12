@@ -1,16 +1,14 @@
 ﻿using Autodesk.DesignScript.Runtime;
-using NetTopologySuite.Algorithm;
 using System;
 using System.Collections.Generic;
 using System.Linq;
-using System.Reflection.Metadata;
 using DynGeometry = Autodesk.DesignScript.Geometry;
 using NtsGeometries = NetTopologySuite.Geometries;
 
 namespace DynamoNTS.Geometry
 {
     /// <summary>
-    /// Represents a topological polygon from NetTopologySuite.
+    /// Represents a topological polygon from NetTopologySuite, supporting exterior boundary and interior holes.
     /// </summary>
     public class NtsPolygon : NtsGeometry
     {
@@ -25,7 +23,7 @@ namespace DynamoNTS.Geometry
         }
 
         /// <summary>
-        /// Internal constructor. Used only from within the C# codebase.
+        /// Internal constructor.
         /// </summary>
         [IsVisibleInDynamoLibrary(false)]
         internal NtsPolygon(NtsGeometries.Polygon polygon) : base(polygon)
@@ -38,36 +36,71 @@ namespace DynamoNTS.Geometry
         /// Creates an NtsPolygon by extracting the exterior boundary of a Dynamo Polygon.
         /// </summary>
         /// <param name="polygon">The base Dynamo Polygon.</param>
-        /// <returns name="NtsPolygon">The equivalent topological polygon in NTS.</returns>
+        /// <returns name="polygon">The topological polygon in NTS.</returns>
         public static NtsPolygon ByPolygon(DynGeometry.Polygon polygon)
         {
             if (polygon == null) throw new ArgumentNullException(nameof(polygon));
 
             var points = polygon.Points;
-            var coordinates = new List<NtsGeometries.CoordinateZ>();
+            var coords = points.Select(pt => new NtsGeometries.CoordinateZ(pt.X, pt.Y, pt.Z)).ToArray();
 
             foreach (var pt in points)
             {
-                coordinates.Add(new NtsGeometries.CoordinateZ(pt.X, pt.Y, pt.Z));
                 pt.Dispose();
             }
 
-            if (coordinates.Count > 0)
-            {
-                var first = coordinates[0];
-                var last = coordinates[coordinates.Count - 1];
+            var shell = ToLinearRing(coords);
+            var ntsPolygon = NtsGeometries.GeometryFactory.Default.CreatePolygon(shell);
 
-                if (first.X != last.X || first.Y != last.Y || first.Z != last.Z)
-                {
-                    coordinates.Add(new NtsGeometries.CoordinateZ(first.X, first.Y, first.Z));
-                }
+            return new NtsPolygon(ntsPolygon);
+        }
+
+        /// <summary>
+        /// Creates an NtsPolygon defined by an exterior boundary ring and optional interior hole rings.
+        /// </summary>
+        /// <param name="exteriorRing">The outer boundary LineString.</param>
+        /// <param name="interiorRings">Optional collection of LineStrings representing holes/voids.</param>
+        /// <returns name="polygon">The topological polygon with holes.</returns>
+        public static NtsPolygon ByRings(
+            NtsLineString exteriorRing,
+            [DefaultArgument("null")] IList<NtsLineString>? interiorRings = null)
+        {
+            if (exteriorRing == null) throw new ArgumentNullException(nameof(exteriorRing));
+
+            var shell = ToLinearRing(exteriorRing.InternalLineString.Coordinates);
+
+            NtsGeometries.LinearRing[]? holes = null;
+            if (interiorRings != null && interiorRings.Count > 0)
+            {
+                holes = interiorRings
+                    .Where(h => h != null && !h.InternalGeometry.IsEmpty)
+                    .Select(h => ToLinearRing(h.InternalLineString.Coordinates))
+                    .ToArray();
             }
 
-            if (coordinates.Count < 4)
-                throw new ArgumentException("A valid polygon requires at least 3 distinct vertices.");
-
-            var ntsPolygon = NtsGeometries.GeometryFactory.Default.CreatePolygon(coordinates.ToArray());
+            var ntsPolygon = NtsGeometries.GeometryFactory.Default.CreatePolygon(shell, holes);
             return new NtsPolygon(ntsPolygon);
+        }
+
+        /// <summary>
+        /// Creates an NtsPolygon from closed Dynamo PolyCurves (exterior boundary and optional holes).
+        /// </summary>
+        /// <param name="exteriorCurve">The closed outer boundary PolyCurve.</param>
+        /// <param name="interiorCurves">Optional list of closed PolyCurves representing holes.</param>
+        /// <returns name="polygon">The topological polygon with holes.</returns>
+        public static NtsPolygon ByPolyCurves(
+            DynGeometry.PolyCurve exteriorCurve,
+            [DefaultArgument("null")] IList<DynGeometry.PolyCurve>? interiorCurves = null)
+        {
+            if (exteriorCurve == null) throw new ArgumentNullException(nameof(exteriorCurve));
+
+            var extLine = NtsLineString.ByPolyCurve(exteriorCurve);
+            var holeLines = interiorCurves?
+                .Where(c => c != null)
+                .Select(NtsLineString.ByPolyCurve)
+                .ToList();
+
+            return ByRings(extLine, holeLines);
         }
 
         #endregion
@@ -75,22 +108,18 @@ namespace DynamoNTS.Geometry
         #region Action Nodes
 
         /// <summary>
-        /// Converts the NtsPolygon back into the Dynamo visual environment.
-        /// Notes: Dynamo Polygon.ByPoints expects distinct points and closes the shape automatically.
+        /// Converts the exterior boundary into a native Dynamo Polygon (holes are not represented).
         /// </summary>
-        /// <returns name="Polygon">A native Dynamo Polygon.</returns>
+        /// <returns name="polygon">The outer boundary as a Dynamo Polygon.</returns>
         public DynGeometry.Polygon ToPolygon()
         {
-            var dynamoPoints = new List<DynGeometry.Point>();
-
             var coords = InternalPolygon.ExteriorRing.Coordinates;
+            var dynamoPoints = new List<DynGeometry.Point>();
 
             for (int i = 0; i < coords.Length - 1; i++)
             {
                 var coord = coords[i];
-
                 double z = double.IsNaN(coord.Z) ? 0.0 : coord.Z;
-
                 dynamoPoints.Add(DynGeometry.Point.ByCoordinates(coord.X, coord.Y, z));
             }
 
@@ -104,24 +133,108 @@ namespace DynamoNTS.Geometry
             return dynPolygon;
         }
 
+        /// <summary>
+        /// Converts all polygon rings (exterior shell and any interior holes) into native Dynamo PolyCurves.
+        /// Index 0 is always the exterior ring; subsequent elements are interior holes.
+        /// </summary>
+        /// <returns name="polyCurves">List of PolyCurves representing all boundaries.</returns>
+        public List<DynGeometry.PolyCurve> ToPolyCurves()
+        {
+            var curves = new List<DynGeometry.PolyCurve> { ExteriorRing.ToPolyCurve() };
+            foreach (var hole in Holes)
+            {
+                curves.Add(hole.ToPolyCurve());
+            }
+            return curves;
+        }
+
         #endregion
 
         #region Query Nodes
 
         /// <summary>
-        /// Gets the geometric area of the polygon.
+        /// Gets the net geometric area (exterior area minus all holes).
         /// </summary>
         public double Area => InternalPolygon.Area;
 
         /// <summary>
-        /// Gets the perimeter length of the exterior boundary.
+        /// Gets the total perimeter including the exterior boundary and all interior holes.
         /// </summary>
         public double Perimeter => InternalPolygon.Length;
 
         /// <summary>
-        /// Calculates the mathematical centroid (center of mass) of the polygon.
+        /// Gets the perimeter of the exterior ring only.
+        /// </summary>
+        public double ExteriorPerimeter => InternalPolygon.ExteriorRing.Length;
+
+        /// <summary>
+        /// Calculates the mathematical centroid (center of mass).
+        /// Note: For concave shapes or polygons with central holes, this point may fall outside the solid region.
         /// </summary>
         public NtsPoint Centroid => new NtsPoint(InternalPolygon.Centroid);
+
+        /// <summary>
+        /// Computes a point guaranteed to lie strictly inside the polygon interior (outside of any holes).
+        /// Ideal for placing labels, inspection points, or property tags.
+        /// </summary>
+        public NtsPoint PointOnSurface => new NtsPoint(InternalPolygon.InteriorPoint);
+
+        /// <summary>
+        /// Gets the outer boundary as an NtsLineString.
+        /// </summary>
+        public NtsLineString ExteriorRing => new NtsLineString(InternalPolygon.ExteriorRing);
+
+        /// <summary>
+        /// Gets all interior void rings (holes) as NtsLineStrings.
+        /// </summary>
+        public List<NtsLineString> Holes
+        {
+            get
+            {
+                var list = new List<NtsLineString>();
+                for (int i = 0; i < InternalPolygon.NumInteriorRings; i++)
+                {
+                    list.Add(new NtsLineString(InternalPolygon.GetInteriorRingN(i)));
+                }
+                return list;
+            }
+        }
+
+        /// <summary>
+        /// Gets the total number of interior holes.
+        /// </summary>
+        public int HoleCount => InternalPolygon.NumInteriorRings;
+
+        /// <summary>
+        /// Checks whether the polygon contains one or more interior holes.
+        /// </summary>
+        public bool HasHoles => InternalPolygon.NumInteriorRings > 0;
+
+        #endregion
+
+        #region Internal Helpers
+
+        private static NtsGeometries.LinearRing ToLinearRing(NtsGeometries.Coordinate[] coordinates)
+        {
+            if (coordinates == null || coordinates.Length < 3)
+                throw new ArgumentException("A ring requires at least 3 distinct coordinates.");
+
+            var coordsList = new List<NtsGeometries.Coordinate>(coordinates);
+
+            var first = coordsList[0];
+            var last = coordsList[coordsList.Count - 1];
+
+            // Ensure the ring is explicitly closed
+            if (first.X != last.X || first.Y != last.Y || first.Z != last.Z)
+            {
+                coordsList.Add(new NtsGeometries.CoordinateZ(first.X, first.Y, first.Z));
+            }
+
+            if (coordsList.Count < 4)
+                throw new ArgumentException("A closed ring requires at least 4 coordinates (3 distinct vertices + closing point).");
+
+            return NtsGeometries.GeometryFactory.Default.CreateLinearRing(coordsList.ToArray());
+        }
 
         #endregion
     }

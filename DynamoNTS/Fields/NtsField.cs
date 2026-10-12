@@ -1,6 +1,5 @@
 ﻿using Autodesk.DesignScript.Runtime;
 using System;
-using System.Text.RegularExpressions;
 
 namespace DynamoNTS.Fields
 {
@@ -10,7 +9,7 @@ namespace DynamoNTS.Fields
     public class NtsField
     {
         /// <summary>
-        /// Field column name (sanitized and trimmed for DBF/GIS compatibility).
+        /// Field column name.
         /// </summary>
         public string Name { get; }
 
@@ -20,7 +19,7 @@ namespace DynamoNTS.Fields
         public NtsFieldType Type { get; }
 
         /// <summary>
-        /// Maximum character length for string fields (max 254 for DBF specifications).
+        /// Maximum character length for string fields (default: 50, max: 254).
         /// </summary>
         public int Length { get; }
 
@@ -37,7 +36,7 @@ namespace DynamoNTS.Fields
         /// <summary>
         /// Creates a GIS attribute field definition.
         /// </summary>
-        /// <param name="name">Column name (alphanumeric and underscores; sanitized and trimmed to 10 characters for DBF compatibility).</param>
+        /// <param name="name">Column name (supports full-length descriptive names).</param>
         /// <param name="type">Attribute column data type.</param>
         /// <param name="length">Maximum string length (default: 50, max: 254).</param>
         /// <returns name="field">The configured NtsField instance.</returns>
@@ -46,19 +45,12 @@ namespace DynamoNTS.Fields
             if (string.IsNullOrWhiteSpace(name))
                 throw new ArgumentException("Field name cannot be null or empty.", nameof(name));
 
-            // Sanitize column name for DBF / Shapefile compatibility
-            string sanitized = Regex.Replace(name.Trim(), @"[^a-zA-Z0-9_]", "_");
-
-            // DBF 10-character limit enforcement
-            if (sanitized.Length > 10)
-            {
-                sanitized = sanitized.Substring(0, 10);
-            }
+            string trimmedName = name.Trim();
 
             if (length < 1) length = 1;
             if (length > 254) length = 254;
 
-            return new NtsField(sanitized, type, length);
+            return new NtsField(trimmedName, type, length);
         }
 
         #endregion

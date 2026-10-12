@@ -14,6 +14,7 @@ using System.Collections.Generic;
 using System.IO;
 using System.Linq;
 using System.Text;
+using System.Text.RegularExpressions;
 
 namespace DynamoNTS.ImportExport
 {
@@ -115,6 +116,7 @@ namespace DynamoNTS.ImportExport
 
         /// <summary>
         /// Writes an NtsLayer to disk as an ESRI Shapefile (.shp, .shx, .dbf, and .prj).
+        /// Automatically maps and disambiguates field names to comply with the 10-character DBF specification.
         /// </summary>
         /// <param name="layer">The NtsLayer to export.</param>
         /// <param name="shpPath">Target destination path (.shp).</param>
@@ -134,19 +136,15 @@ namespace DynamoNTS.ImportExport
                 Directory.CreateDirectory(dir);
             }
 
-            // 1. Determine ShapeType based on the layer geometries
+            // 1. Determine ShapeType based on layer geometries (supporting multigeometries)
             var firstGeom = layer.Features.FirstOrDefault(f => f?.Geometry != null)?.Geometry;
             if (firstGeom == null)
                 throw new InvalidOperationException("The layer does not contain valid geometries to export.");
 
             var shapeType = ResolveShapeType(firstGeom);
 
-            // 2. Build DBF field definitions from the layer's formal schema
-            var dbfFields = new List<DbfField>();
-            foreach (var field in layer.Schema.Fields)
-            {
-                dbfFields.Add(CreateDbfField(field));
-            }
+            // 2. Build mapped and disambiguated DBF field definitions
+            var (dbfFields, fieldNameToDbfName) = BuildDbfFieldsMapping(layer.Schema.Fields);
 
             // 3. Write features using explicit ShapefileWriterOptions
             var options = new ShapefileWriterOptions(shapeType, dbfFields.ToArray());
@@ -159,8 +157,9 @@ namespace DynamoNTS.ImportExport
                     var table = new AttributesTable();
                     foreach (var field in layer.Schema.Fields)
                     {
+                        string dbfName = fieldNameToDbfName[field.Name];
                         object? val = f.GetValue(field.Name);
-                        table.Add(field.Name, (val is DBNull) ? null : val);
+                        table.Add(dbfName, (val is DBNull) ? null : val);
                     }
 
                     writer.Write(new Feature(f.Geometry.InternalGeometry, table));
@@ -179,17 +178,72 @@ namespace DynamoNTS.ImportExport
 
         #endregion
 
-        #region Helpers
+        #region Helpers & Disambiguation
+
+        /// <summary>
+        /// Generates unique DBF column names (max 10 chars, alphanumeric + underscore)
+        /// and maps original schema field names to their sanitized DBF counterparts.
+        /// </summary>
+        private static (List<DbfField> DbfFields, Dictionary<string, string> Mapping) BuildDbfFieldsMapping(IEnumerable<NtsField> fields)
+        {
+            var dbfFields = new List<DbfField>();
+            var mapping = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+            var usedDbfNames = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+
+            foreach (var field in fields)
+            {
+                // 1. Saneamiento inicial: caracteres alfanuméricos y guiones bajos
+                string sanitized = Regex.Replace(field.Name.Trim(), @"[^a-zA-Z0-9_]", "_");
+                if (string.IsNullOrWhiteSpace(sanitized))
+                {
+                    sanitized = "ATTR";
+                }
+
+                // 2. Truncar a máximo 10 caracteres
+                string candidate = sanitized.Length > 10 ? sanitized.Substring(0, 10) : sanitized;
+
+                // 3. Resolver colisiones agregando sufijos numéricos (_1, _2...) sin exceder 10 caracteres
+                if (usedDbfNames.Contains(candidate))
+                {
+                    int counter = 1;
+                    while (true)
+                    {
+                        string suffix = "_" + counter;
+                        int prefixMaxLen = 10 - suffix.Length;
+                        string prefix = candidate.Length > prefixMaxLen ? candidate.Substring(0, prefixMaxLen) : candidate;
+                        string resolved = prefix + suffix;
+
+                        if (!usedDbfNames.Contains(resolved))
+                        {
+                            candidate = resolved;
+                            break;
+                        }
+                        counter++;
+                    }
+                }
+
+                usedDbfNames.Add(candidate);
+                mapping[field.Name] = candidate;
+
+                // 4. Crear el campo DBF tipificado con el nombre saneado
+                dbfFields.Add(CreateDbfField(candidate, field.Type, field.Length));
+            }
+
+            return (dbfFields, mapping);
+        }
 
         private static ShapeType ResolveShapeType(NtsGeometry geometry)
         {
             if (geometry is NtsPoint)
                 return ShapeType.Point;
 
-            if (geometry is NtsLineString)
+            if (geometry is NtsMultiPoint)
+                return ShapeType.MultiPoint;
+
+            if (geometry is NtsLineString || geometry is NtsMultiLineString)
                 return ShapeType.PolyLine;
 
-            if (geometry is NtsPolygon)
+            if (geometry is NtsPolygon || geometry is NtsMultiPolygon)
                 return ShapeType.Polygon;
 
             return ShapeType.Point;
@@ -211,20 +265,20 @@ namespace DynamoNTS.ImportExport
             }
         }
 
-        private static DbfField CreateDbfField(NtsField field)
+        private static DbfField CreateDbfField(string dbfName, NtsFieldType type, int length)
         {
-            switch (field.Type)
+            switch (type)
             {
                 case NtsFieldType.Integer:
-                    return new DbfNumericInt32Field(field.Name);
+                    return new DbfNumericInt32Field(dbfName);
                 case NtsFieldType.Double:
-                    return new DbfNumericDoubleField(field.Name);
+                    return new DbfNumericDoubleField(dbfName);
                 case NtsFieldType.Boolean:
-                    return new DbfLogicalField(field.Name);
+                    return new DbfLogicalField(dbfName);
                 case NtsFieldType.Date:
-                    return new DbfDateField(field.Name);
+                    return new DbfDateField(dbfName);
                 default:
-                    return new DbfCharacterField(field.Name, field.Length);
+                    return new DbfCharacterField(dbfName, length);
             }
         }
 

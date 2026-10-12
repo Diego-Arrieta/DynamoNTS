@@ -117,6 +117,10 @@ namespace DynamoNTS.Geometry
             if (ntsGeometry is NtsGeometries.LineString ls) return new NtsLineString(ls);
             if (ntsGeometry is NtsGeometries.Polygon poly) return new NtsPolygon(poly);
 
+            if (ntsGeometry is NtsGeometries.MultiPoint mp) return new NtsMultiPoint(mp);
+            if (ntsGeometry is NtsGeometries.MultiLineString mls) return new NtsMultiLineString(mls);
+            if (ntsGeometry is NtsGeometries.MultiPolygon mpoly) return new NtsMultiPolygon(mpoly);
+
             throw new NotSupportedException($"The resulting geometry type '{ntsGeometry.GeometryType}' is not currently supported in Dynamo wrapper classes.");
         }
 
