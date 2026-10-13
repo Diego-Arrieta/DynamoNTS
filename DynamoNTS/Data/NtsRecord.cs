@@ -264,6 +264,32 @@ namespace DynamoNTS.Data
 
         #endregion
 
+        #region Indexers
+
+        /// <summary>
+        /// Gets or sets an attribute value by field column name using square-bracket indexing.
+        /// Example: record["DIAMETRO"] = 250;
+        /// </summary>
+        /// <param name="fieldName">Field column name.</param>
+        /// <returns>The attribute value, or null if not found.</returns>
+        public object? this[string fieldName]
+        {
+            get => GetValue(fieldName);
+            set => SetValue(fieldName, value);
+        }
+
+        /// <summary>
+        /// Gets or sets an attribute value by formal NtsField definition using square-bracket indexing.
+        /// </summary>
+        /// <param name="field">The NtsField instance.</param>
+        /// <returns>The attribute value, or null if not found.</returns>
+        public object? this[NtsField field]
+        {
+            get => GetValue(field);
+            set => SetValue(field, value);
+        }
+
+        #endregion
         public override string ToString()
         {
             return $"NtsRecord({Count} Attributes: {string.Join(", ", Keys)})";

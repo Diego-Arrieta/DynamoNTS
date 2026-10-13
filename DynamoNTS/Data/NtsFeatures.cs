@@ -162,5 +162,37 @@ namespace DynamoNTS.Data
         }
 
         #endregion
+        
+        #region Indexers
+
+        /// <summary>
+        /// Gets or sets an attribute value directly on the feature using square-bracket indexing by column name.
+        /// Example: feature["COTA_FONDO"] = 24.85;
+        /// </summary>
+        /// <param name="fieldName">Field column name.</param>
+        /// <returns>The attribute value, or null if not found.</returns>
+        public object? this[string fieldName]
+        {
+            get => GetValue(fieldName);
+            set => SetValue(fieldName, value);
+        }
+
+        /// <summary>
+        /// Gets or sets an attribute value directly on the feature using square-bracket indexing by formal NtsField.
+        /// </summary>
+        /// <param name="field">The NtsField definition.</param>
+        /// <returns>The attribute value, or null if not found.</returns>
+        public object? this[NtsField field]
+        {
+            get => GetValue(field);
+            set => SetValue(field, value);
+        }
+
+        #endregion
+        public override string ToString()
+        {
+            string geomType = Geometry?.GeometryType.ToString() ?? "None";
+            return $"NtsFeature(Geom={geomType}, Attrs={Record?.Count ?? 0})";
+        }
     }
 }

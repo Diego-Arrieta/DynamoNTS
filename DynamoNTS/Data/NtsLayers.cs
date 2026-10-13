@@ -447,6 +447,34 @@ namespace DynamoNTS.Data
             };
         }
 
+        /// <summary>
+        /// Extracts all values of a specified attribute column as a flat list directly from the layer.
+        /// Eliminates the need for complex lacing or List.Map operations in Dynamo.
+        /// </summary>
+        /// <param name="fieldName">The target column/field name.</param>
+        /// <returns name="values">Flat list of attribute values for that column.</returns>
+        public List<object?> GetColumnValues(string fieldName)
+        {
+            if (string.IsNullOrWhiteSpace(fieldName))
+                throw new ArgumentException("Field name cannot be null or empty.", nameof(fieldName));
+
+            return Features
+                .Select(f => f?.GetValue(fieldName))
+                .ToList();
+        }
+
+        /// <summary>
+        /// Converts all attribute records in the layer into a list of native Dynamo dictionaries.
+        /// Ideal for seamless interoperability with Data-Shapes, CivilConnection, Excel, or CSV export nodes.
+        /// </summary>
+        /// <returns name="dictionaries">List of dictionaries representing each feature's attributes.</returns>
+        public List<Dictionary<string, object?>> ToDictionaries()
+        {
+            return Features
+                .Select(f => f?.Record?.ToDictionary() ?? new Dictionary<string, object?>())
+                .ToList();
+        }
+
         #endregion
 
         #region Helpers
