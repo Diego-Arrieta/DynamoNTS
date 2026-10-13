@@ -3,7 +3,6 @@ using DynamoNTS.Geometry;
 using NetTopologySuite.IO;
 using System;
 using System.Text;
-using NtsGeom = NetTopologySuite.Geometries.Geometry;
 
 namespace DynamoNTS.IO
 {
@@ -35,7 +34,7 @@ namespace DynamoNTS.IO
         /// <returns name="hexString">The hexadecimal representation of the geometry.</returns>
         public static string ToHex(NtsGeometry geometry)
         {
-            if (geometry == null) throw new ArgumentNullException(nameof(geometry));
+            ArgumentNullException.ThrowIfNull(geometry);
 
             var bytes = ToBytes(geometry);
             return BytesToHex(bytes);
@@ -58,7 +57,8 @@ namespace DynamoNTS.IO
             var reader = new WKBReader();
             var ntsGeom = reader.Read(bytes);
 
-            return NtsGeometry.WrapGeometry(ntsGeom);
+            return NtsGeometry.WrapGeometry(ntsGeom)
+                   ?? throw new InvalidOperationException("Failed to construct a valid geometry from WKB binary data.");
         }
 
         /// <summary>
@@ -68,7 +68,7 @@ namespace DynamoNTS.IO
         /// <returns name="bytes">Raw byte array representation.</returns>
         public static byte[] ToBytes(NtsGeometry geometry)
         {
-            if (geometry == null) throw new ArgumentNullException(nameof(geometry));
+            ArgumentNullException.ThrowIfNull(geometry);
 
             var writer = new WKBWriter();
             return writer.Write(geometry.InternalGeometry);
@@ -92,7 +92,7 @@ namespace DynamoNTS.IO
 
         private static byte[] HexToBytes(string hex)
         {
-            if (string.IsNullOrWhiteSpace(hex)) return Array.Empty<byte>();
+            if (string.IsNullOrWhiteSpace(hex)) return [];
 
             int numberChars = hex.Length;
             byte[] bytes = new byte[numberChars / 2];

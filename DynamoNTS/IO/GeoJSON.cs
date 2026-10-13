@@ -1,7 +1,6 @@
 ﻿using Autodesk.DesignScript.Runtime;
 using DynamoNTS.Data;
 using DynamoNTS.Geometry;
-using DynamoNTS.Data;
 using DynamoNTS.Projections;
 using NetTopologySuite.Features;
 using NetTopologySuite.IO;
