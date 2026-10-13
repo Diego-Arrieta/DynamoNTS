@@ -1,5 +1,5 @@
 ﻿using Autodesk.DesignScript.Runtime;
-using DynamoNTS.Features;
+using DynamoNTS.Data;
 using DynamoNTS.Geometry;
 using NetTopologySuite.Features;
 using NetTopologySuite.Geometries;
@@ -24,8 +24,8 @@ namespace DynamoNTS.Projections
         /// <returns name="geometry">A new NtsGeometry reprojected into the target CRS, or null if geometry is empty.</returns>
         public static NtsGeometry? TransformGeometry(
             NtsGeometry geometry,
-            CoordinateSystem source,
-            CoordinateSystem target)
+            NtsCoordinateSystem source,
+            NtsCoordinateSystem target)
         {
             if (geometry == null) throw new ArgumentNullException(nameof(geometry));
             if (source == null) throw new ArgumentNullException(nameof(source));
@@ -66,8 +66,8 @@ namespace DynamoNTS.Projections
         /// <returns name="feature">A new NtsFeature with reprojected geometry and preserved attributes.</returns>
         public static NtsFeature TransformFeature(
             NtsFeature feature,
-            CoordinateSystem source,
-            CoordinateSystem target)
+            NtsCoordinateSystem source,
+            NtsCoordinateSystem target)
         {
             if (feature == null) throw new ArgumentNullException(nameof(feature));
             if (source == null) throw new ArgumentNullException(nameof(source));
@@ -94,8 +94,8 @@ namespace DynamoNTS.Projections
         public static double[] TransformPoint(
             double x,
             double y,
-            CoordinateSystem source,
-            CoordinateSystem target)
+            NtsCoordinateSystem source,
+            NtsCoordinateSystem target)
         {
             if (source == null) throw new ArgumentNullException(nameof(source));
             if (target == null) throw new ArgumentNullException(nameof(target));

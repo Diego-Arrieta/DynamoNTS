@@ -1,12 +1,11 @@
 ﻿using Autodesk.DesignScript.Runtime;
-using DynamoNTS.Fields;
 using DynamoNTS.Geometry;
-using DynamoNTS.Layers;
+using DynamoNTS.Data;
 using NetTopologySuite.Features;
 using System;
 using System.Collections.Generic;
 
-namespace DynamoNTS.Features
+namespace DynamoNTS.Data
 {
     /// <summary>
     /// Represents a complete GIS feature combining topological geometry with a structured alphanumeric record.

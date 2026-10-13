@@ -1,10 +1,10 @@
 ﻿using Autodesk.DesignScript.Runtime;
-using DynamoNTS.Fields;
+using DynamoNTS.Data;
 using System;
 using System.Collections.Generic;
 using System.Linq;
 
-namespace DynamoNTS.Layers
+namespace DynamoNTS.Data
 {
     /// <summary>
     /// Represents the formal tabular attribute schema (ordered collection of NtsField definitions) for a GIS layer.

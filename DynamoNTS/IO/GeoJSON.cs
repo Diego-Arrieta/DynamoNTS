@@ -1,8 +1,7 @@
 ﻿using Autodesk.DesignScript.Runtime;
-using DynamoNTS.Features;
-using DynamoNTS.Fields;
+using DynamoNTS.Data;
 using DynamoNTS.Geometry;
-using DynamoNTS.Layers;
+using DynamoNTS.Data;
 using DynamoNTS.Projections;
 using NetTopologySuite.Features;
 using NetTopologySuite.IO;
@@ -12,7 +11,7 @@ using System.IO;
 using System.Linq;
 using NtsGeom = NetTopologySuite.Geometries.Geometry;
 
-namespace DynamoNTS.ImportExport
+namespace DynamoNTS.IO
 {
     /// <summary>
     /// Provides methods to import and export GeoJSON data for layers and isolated geometries.
@@ -29,7 +28,7 @@ namespace DynamoNTS.ImportExport
         /// <returns name="layer">The reconstructed NtsLayer.</returns>
         public static NtsLayer ReadLayer(
             string filePathOrJson,
-            [DefaultArgument("null")] CoordinateSystem? crsOverride = null)
+            [DefaultArgument("null")] NtsCoordinateSystem? crsOverride = null)
         {
             if (string.IsNullOrWhiteSpace(filePathOrJson))
                 throw new ArgumentException("Input path or GeoJSON text cannot be null or empty.", nameof(filePathOrJson));
@@ -75,7 +74,7 @@ namespace DynamoNTS.ImportExport
             }
 
             var schema = NtsSchema.ByFields(fieldsMap.Values.ToList());
-            var crs = crsOverride ?? CoordinateSystem.WGS84;
+            var crs = crsOverride ?? NtsCoordinateSystem.WGS84;
             string layerName = File.Exists(filePathOrJson) ? Path.GetFileNameWithoutExtension(filePathOrJson) : "GeoJsonLayer";
 
             return NtsLayer.ByFeatures(features, layerName, crs, schema);

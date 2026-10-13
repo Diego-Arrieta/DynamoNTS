@@ -1,7 +1,7 @@
 ﻿using Autodesk.DesignScript.Runtime;
 using System;
 
-namespace DynamoNTS.Fields
+namespace DynamoNTS.Data
 {
     /// <summary>
     /// Defines column schema metadata and constraints for a GIS attribute field.

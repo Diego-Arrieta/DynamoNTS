@@ -1,8 +1,6 @@
 ﻿using Autodesk.DesignScript.Runtime;
-using DynamoNTS.Features;
-using DynamoNTS.Fields;
+using DynamoNTS.Data;
 using DynamoNTS.Geometry;
-using DynamoNTS.Layers;
 using DynamoNTS.Projections;
 using NetTopologySuite.Features;
 using NetTopologySuite.IO.Esri;
@@ -16,10 +14,10 @@ using System.Linq;
 using System.Text;
 using System.Text.RegularExpressions;
 
-namespace DynamoNTS.ImportExport
+namespace DynamoNTS.IO
 {
     /// <summary>
-    /// Provides methods to read and write ESRI Shapefile datasets (.shp, .dbf, .prj)
+    /// Provides methods to read and write ESRI Shapefile datasets (.shp, .dbf, .prj, .cpg)
     /// using the modern NetTopologySuite.IO.Esri engine.
     /// </summary>
     public static class Shapefile
@@ -34,7 +32,7 @@ namespace DynamoNTS.ImportExport
         /// <returns name="layer">The loaded (and optionally reprojected) NtsLayer instance.</returns>
         public static NtsLayer Read(
             string shpPath,
-            [DefaultArgument("null")] CoordinateSystem? crsOverride = null)
+            [DefaultArgument("null")] NtsCoordinateSystem? crsOverride = null)
         {
             if (string.IsNullOrWhiteSpace(shpPath))
                 throw new ArgumentException("Shapefile path cannot be null or empty.", nameof(shpPath));
@@ -42,14 +40,14 @@ namespace DynamoNTS.ImportExport
             if (!File.Exists(shpPath))
                 throw new FileNotFoundException($"Shapefile not found: '{shpPath}'");
 
-            // 1. Resolve native source Coordinate Reference System from .prj
-            CoordinateSystem? sourceCrs = null;
+            // 1. Resolver el CRS nativo desde el archivo .prj
+            NtsCoordinateSystem? sourceCrs = null;
             string prjPath = Path.ChangeExtension(shpPath, ".prj");
             if (File.Exists(prjPath))
             {
                 try
                 {
-                    sourceCrs = CoordinateSystem.ByPrjFile(prjPath);
+                    sourceCrs = NtsCoordinateSystem.ByPrjFile(prjPath);
                 }
                 catch
                 {
@@ -57,7 +55,7 @@ namespace DynamoNTS.ImportExport
                 }
             }
 
-            // 2. Extract schema metadata directly from DBF column headers
+            // 2. Extraer el esquema formal de atributos desde los encabezados DBF
             var fields = new List<NtsField>();
             using (var reader = NetTopologySuite.IO.Esri.Shapefile.OpenRead(shpPath))
             {
@@ -69,7 +67,7 @@ namespace DynamoNTS.ImportExport
             }
             var schema = NtsSchema.ByFields(fields);
 
-            // 3. Read all spatial features with their attributes in native coordinates
+            // 3. Leer todas las entidades espaciales con sus atributos
             var rawFeatures = NetTopologySuite.IO.Esri.Shapefile.ReadAllFeatures(shpPath);
             var features = new List<NtsFeature>();
 
@@ -100,7 +98,7 @@ namespace DynamoNTS.ImportExport
             string layerName = Path.GetFileNameWithoutExtension(shpPath);
             var nativeLayer = NtsLayer.ByFeatures(features, layerName, sourceCrs, schema);
 
-            // 4. Reproject if a new CRS is supplied
+            // 4. Reproyectar si se especificó un CRS destino diferente
             if (crsOverride != null)
             {
                 if (sourceCrs != null)
@@ -115,8 +113,8 @@ namespace DynamoNTS.ImportExport
         }
 
         /// <summary>
-        /// Writes an NtsLayer to disk as an ESRI Shapefile (.shp, .shx, .dbf, and .prj).
-        /// Automatically maps and disambiguates field names to comply with the 10-character DBF specification.
+        /// Writes an NtsLayer to disk as an ESRI Shapefile dataset (.shp, .shx, .dbf, .prj, and .cpg).
+        /// Enforces homogeneous geometry constraints and automatically maps field types.
         /// </summary>
         /// <param name="layer">The NtsLayer to export.</param>
         /// <param name="shpPath">Target destination path (.shp).</param>
@@ -130,24 +128,33 @@ namespace DynamoNTS.ImportExport
             if (layer.Count == 0)
                 throw new InvalidOperationException("Cannot write an empty layer to Shapefile.");
 
+            // 1. Validación estricta de homogeneidad de geometrías
+            if (!layer.IsHomogeneous)
+            {
+                throw new InvalidOperationException(
+                    $"Cannot export layer '{layer.Name}' to Shapefile because it contains mixed geometry types ({layer.GeometryType}). " +
+                    "ESRI Shapefiles require all features in a file to have the exact same geometry type. " +
+                    "Use 'layer.FilterByGeometryType' to split the layer before exporting.");
+            }
+
             string? dir = Path.GetDirectoryName(shpPath);
             if (!string.IsNullOrEmpty(dir) && !Directory.Exists(dir))
             {
                 Directory.CreateDirectory(dir);
             }
 
-            // 1. Determine ShapeType based on layer geometries (supporting multigeometries)
-            var firstGeom = layer.Features.FirstOrDefault(f => f?.Geometry != null)?.Geometry;
-            if (firstGeom == null)
-                throw new InvalidOperationException("The layer does not contain valid geometries to export.");
+            // 2. Determinar el ShapeType base compatible con NetTopologySuite.IO.Esri
+            var shapeType = ResolveShapeType(layer);
 
-            var shapeType = ResolveShapeType(firstGeom);
-
-            // 2. Build mapped and disambiguated DBF field definitions
+            // 3. Crear definición y mapeo de nombres para columnas DBF (máximo 10 caracteres)
             var (dbfFields, fieldNameToDbfName) = BuildDbfFieldsMapping(layer.Schema.Fields);
 
-            // 3. Write features using explicit ShapefileWriterOptions
-            var options = new ShapefileWriterOptions(shapeType, dbfFields.ToArray());
+            // 4. Configurar el escritor con soporte UTF-8
+            var options = new ShapefileWriterOptions(shapeType, dbfFields.ToArray())
+            {
+                Encoding = Encoding.UTF8
+            };
+
             using (var writer = NetTopologySuite.IO.Esri.Shapefile.OpenWrite(shpPath, options))
             {
                 foreach (var f in layer.Features)
@@ -166,12 +173,16 @@ namespace DynamoNTS.ImportExport
                 }
             }
 
-            // 4. Write projection file (.prj) if CRS is defined
+            // 5. Escribir metadatos de proyección (.prj) si el CRS está definido
             if (layer.CoordinateSystem?.InternalCRS != null)
             {
                 string prjPath = Path.ChangeExtension(shpPath, ".prj");
                 File.WriteAllText(prjPath, layer.CoordinateSystem.InternalCRS.WKT, Encoding.UTF8);
             }
+
+            // 6. Escribir archivo de codificación de caracteres (.cpg) para QGIS y ArcGIS
+            string cpgPath = Path.ChangeExtension(shpPath, ".cpg");
+            File.WriteAllText(cpgPath, "UTF-8", Encoding.ASCII);
 
             return true;
         }
@@ -180,10 +191,18 @@ namespace DynamoNTS.ImportExport
 
         #region Helpers & Disambiguation
 
-        /// <summary>
-        /// Generates unique DBF column names (max 10 chars, alphanumeric + underscore)
-        /// and maps original schema field names to their sanitized DBF counterparts.
-        /// </summary>
+        private static ShapeType ResolveShapeType(NtsLayer layer)
+        {
+            return layer.GeometryType switch
+            {
+                NtsGeometryType.Point => ShapeType.Point,
+                NtsGeometryType.MultiPoint => ShapeType.MultiPoint,
+                NtsGeometryType.LineString or NtsGeometryType.MultiLineString => ShapeType.PolyLine,
+                NtsGeometryType.Polygon or NtsGeometryType.MultiPolygon => ShapeType.Polygon,
+                _ => ShapeType.Point
+            };
+        }
+
         private static (List<DbfField> DbfFields, Dictionary<string, string> Mapping) BuildDbfFieldsMapping(IEnumerable<NtsField> fields)
         {
             var dbfFields = new List<DbfField>();
@@ -232,54 +251,27 @@ namespace DynamoNTS.ImportExport
             return (dbfFields, mapping);
         }
 
-        private static ShapeType ResolveShapeType(NtsGeometry geometry)
-        {
-            if (geometry is NtsPoint)
-                return ShapeType.Point;
-
-            if (geometry is NtsMultiPoint)
-                return ShapeType.MultiPoint;
-
-            if (geometry is NtsLineString || geometry is NtsMultiLineString)
-                return ShapeType.PolyLine;
-
-            if (geometry is NtsPolygon || geometry is NtsMultiPolygon)
-                return ShapeType.Polygon;
-
-            return ShapeType.Point;
-        }
-
         private static NtsFieldType MapFieldType(DbfType type)
         {
-            switch (type)
+            return type switch
             {
-                case DbfType.Numeric:
-                case DbfType.Float:
-                    return NtsFieldType.Double;
-                case DbfType.Date:
-                    return NtsFieldType.Date;
-                case DbfType.Logical:
-                    return NtsFieldType.Boolean;
-                default:
-                    return NtsFieldType.String;
-            }
+                DbfType.Numeric or DbfType.Float => NtsFieldType.Double,
+                DbfType.Date => NtsFieldType.Date,
+                DbfType.Logical => NtsFieldType.Boolean,
+                _ => NtsFieldType.String
+            };
         }
 
         private static DbfField CreateDbfField(string dbfName, NtsFieldType type, int length)
         {
-            switch (type)
+            return type switch
             {
-                case NtsFieldType.Integer:
-                    return new DbfNumericInt32Field(dbfName);
-                case NtsFieldType.Double:
-                    return new DbfNumericDoubleField(dbfName);
-                case NtsFieldType.Boolean:
-                    return new DbfLogicalField(dbfName);
-                case NtsFieldType.Date:
-                    return new DbfDateField(dbfName);
-                default:
-                    return new DbfCharacterField(dbfName, length);
-            }
+                NtsFieldType.Integer => new DbfNumericInt32Field(dbfName),
+                NtsFieldType.Double => new DbfNumericDoubleField(dbfName),
+                NtsFieldType.Boolean => new DbfLogicalField(dbfName),
+                NtsFieldType.Date => new DbfDateField(dbfName),
+                _ => new DbfCharacterField(dbfName, length)
+            };
         }
 
         #endregion

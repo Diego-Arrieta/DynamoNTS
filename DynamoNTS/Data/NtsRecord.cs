@@ -1,12 +1,11 @@
 ﻿using Autodesk.DesignScript.Runtime;
-using DynamoNTS.Fields;
-using DynamoNTS.Layers;
+using DynamoNTS.Data;
 using NetTopologySuite.Features;
 using System;
 using System.Collections.Generic;
 using System.Linq;
 
-namespace DynamoNTS.Features
+namespace DynamoNTS.Data
 {
     /// <summary>
     /// Represents the complete tabular record (row) of attributes associated with a spatial feature.

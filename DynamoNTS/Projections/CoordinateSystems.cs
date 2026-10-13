@@ -8,7 +8,7 @@ namespace DynamoNTS.Projections
     /// <summary>
     /// Represents a Geographic or Projected Coordinate Reference System (CRS).
     /// </summary>
-    public class CoordinateSystem
+    public class NtsCoordinateSystem
     {
         [IsVisibleInDynamoLibrary(false)]
         internal ProjCS.CoordinateSystem InternalCRS { get; }
@@ -17,7 +17,7 @@ namespace DynamoNTS.Projections
         public string Name => InternalCRS?.Name ?? "Unknown CRS";
 
         [IsVisibleInDynamoLibrary(false)]
-        internal CoordinateSystem(ProjCS.CoordinateSystem crs, int epsg = 0)
+        internal NtsCoordinateSystem(ProjCS.CoordinateSystem crs, int epsg = 0)
         {
             InternalCRS = crs ?? throw new ArgumentNullException(nameof(crs));
             EPSG = epsg;
@@ -25,18 +25,18 @@ namespace DynamoNTS.Projections
 
         #region Create Nodes
 
-        public static CoordinateSystem ByEPSG(int epsgCode)
+        public static NtsCoordinateSystem ByEPSG(int epsgCode)
         {
             var csFactory = new ProjCS.CoordinateSystemFactory();
 
             if (epsgCode == 4326)
             {
-                return new CoordinateSystem(ProjCS.GeographicCoordinateSystem.WGS84, 4326);
+                return new NtsCoordinateSystem(ProjCS.GeographicCoordinateSystem.WGS84, 4326);
             }
 
             if (epsgCode == 3857 || epsgCode == 900913)
             {
-                return new CoordinateSystem(ProjCS.ProjectedCoordinateSystem.WebMercator, 3857);
+                return new NtsCoordinateSystem(ProjCS.ProjectedCoordinateSystem.WebMercator, 3857);
             }
 
             if (epsgCode >= 32601 && epsgCode <= 32660)
@@ -44,7 +44,7 @@ namespace DynamoNTS.Projections
                 int zone = epsgCode - 32600;
                 string wkt = BuildUtmWkt(zone, isNorth: true);
                 var crs = csFactory.CreateFromWkt(wkt);
-                return new CoordinateSystem(crs, epsgCode);
+                return new NtsCoordinateSystem(crs, epsgCode);
             }
 
             if (epsgCode >= 32701 && epsgCode <= 32760)
@@ -52,13 +52,13 @@ namespace DynamoNTS.Projections
                 int zone = epsgCode - 32700;
                 string wkt = BuildUtmWkt(zone, isNorth: false);
                 var crs = csFactory.CreateFromWkt(wkt);
-                return new CoordinateSystem(crs, epsgCode);
+                return new NtsCoordinateSystem(crs, epsgCode);
             }
 
             throw new NotSupportedException($"EPSG code {epsgCode} is not in the built-in catalog.");
         }
 
-        public static CoordinateSystem ByWKT(string wktString)
+        public static NtsCoordinateSystem ByWKT(string wktString)
         {
             if (string.IsNullOrWhiteSpace(wktString))
                 throw new ArgumentException("WKT string cannot be null or empty.", nameof(wktString));
@@ -66,10 +66,10 @@ namespace DynamoNTS.Projections
             var csFactory = new ProjCS.CoordinateSystemFactory();
             var crs = csFactory.CreateFromWkt(wktString);
 
-            return new CoordinateSystem(crs);
+            return new NtsCoordinateSystem(crs);
         }
 
-        public static CoordinateSystem ByPrjFile(string prjFilePath)
+        public static NtsCoordinateSystem ByPrjFile(string prjFilePath)
         {
             if (string.IsNullOrWhiteSpace(prjFilePath))
                 throw new ArgumentException("File path cannot be null or empty.", nameof(prjFilePath));
@@ -80,7 +80,7 @@ namespace DynamoNTS.Projections
             return ByWKT(File.ReadAllText(prjFilePath));
         }
 
-        public static CoordinateSystem WGS84_UTM(int zone, bool isNorth)
+        public static NtsCoordinateSystem WGS84_UTM(int zone, bool isNorth)
         {
             if (zone < 1 || zone > 60)
                 throw new ArgumentOutOfRangeException(nameof(zone), "UTM zone must be between 1 and 60.");
@@ -89,8 +89,8 @@ namespace DynamoNTS.Projections
             return ByEPSG(epsg);
         }
 
-        public static CoordinateSystem WGS84 => ByEPSG(4326);
-        public static CoordinateSystem WebMercator => ByEPSG(3857);
+        public static NtsCoordinateSystem WGS84 => ByEPSG(4326);
+        public static NtsCoordinateSystem WebMercator => ByEPSG(3857);
 
         #endregion
 

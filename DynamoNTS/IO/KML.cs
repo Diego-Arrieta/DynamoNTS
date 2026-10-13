@@ -1,8 +1,6 @@
 ﻿using Autodesk.DesignScript.Runtime;
-using DynamoNTS.Features;
-using DynamoNTS.Fields;
+using DynamoNTS.Data;
 using DynamoNTS.Geometry;
-using DynamoNTS.Layers;
 using DynamoNTS.Projections;
 using NetTopologySuite.Geometries;
 using System;
@@ -12,7 +10,7 @@ using System.IO;
 using System.Linq;
 using System.Xml.Linq;
 
-namespace DynamoNTS.ImportExport
+namespace DynamoNTS.IO
 {
     /// <summary>
     /// Provides methods to import and export OGC KML (Keyhole Markup Language) datasets.
@@ -32,7 +30,7 @@ namespace DynamoNTS.ImportExport
         /// <returns name="layer">The loaded NtsLayer instance.</returns>
         public static NtsLayer Read(
             string filePath,
-            [DefaultArgument("null")] CoordinateSystem? targetCrs = null)
+            [DefaultArgument("null")] NtsCoordinateSystem? targetCrs = null)
         {
             if (string.IsNullOrWhiteSpace(filePath))
                 throw new ArgumentException("KML file path cannot be null or empty.", nameof(filePath));
@@ -41,8 +39,6 @@ namespace DynamoNTS.ImportExport
                 throw new FileNotFoundException($"KML file not found: '{filePath}'");
 
             var doc = XDocument.Load(filePath);
-
-            // Match Placemarks regardless of default namespace prefix variations
             var placemarks = doc.Descendants().Where(e => e.Name.LocalName == "Placemark").ToList();
 
             if (placemarks.Count == 0)
@@ -54,9 +50,9 @@ namespace DynamoNTS.ImportExport
 
             foreach (var placemark in placemarks)
             {
-                // 1. Parse Geometry
+                // 1. Parse Geometry (incluyendo MultiGeometry y polígonos con huecos)
                 var ntsGeom = ParseGeometry(placemark, geomFactory);
-                if (ntsGeom == null) continue;
+                if (ntsGeom == null || ntsGeom.IsEmpty) continue;
 
                 var wrappedGeom = NtsGeometry.WrapGeometry(ntsGeom);
                 if (wrappedGeom == null) continue;
@@ -90,7 +86,7 @@ namespace DynamoNTS.ImportExport
                     }
                 }
 
-                // Register discovered fields
+                // Registrar atributos en el diccionario de campos
                 foreach (var kvp in rawAttrs)
                 {
                     if (!fieldsMap.ContainsKey(kvp.Key))
@@ -106,16 +102,14 @@ namespace DynamoNTS.ImportExport
             if (features.Count == 0)
                 throw new InvalidOperationException("No valid geometries could be parsed from the KML Placemarks.");
 
-            // Fallback to empty schema if no attributes exist
             var schema = fieldsMap.Count > 0
                 ? NtsSchema.ByFields(fieldsMap.Values.ToList())
                 : NtsSchema.Empty();
 
             string layerName = Path.GetFileNameWithoutExtension(filePath);
-            var layer = NtsLayer.ByFeatures(features, layerName, CoordinateSystem.WGS84, schema);
+            var layer = NtsLayer.ByFeatures(features, layerName, NtsCoordinateSystem.WGS84, schema);
 
-            // Reproject if a destination CRS was requested
-            if (targetCrs != null && targetCrs.EPSG != CoordinateSystem.WGS84.EPSG)
+            if (targetCrs != null && targetCrs.EPSG != NtsCoordinateSystem.WGS84.EPSG)
             {
                 return layer.Reproject(targetCrs);
             }
@@ -144,11 +138,10 @@ namespace DynamoNTS.ImportExport
                 Directory.CreateDirectory(dir);
             }
 
-            // KML requires WGS84 (EPSG:4326)
             NtsLayer exportLayer = layer;
             if (layer.CoordinateSystem != null && layer.CoordinateSystem.EPSG != 4326)
             {
-                exportLayer = layer.Reproject(CoordinateSystem.WGS84);
+                exportLayer = layer.Reproject(NtsCoordinateSystem.WGS84);
             }
 
             var documentElem = new XElement(KmlNs + "Document",
@@ -172,7 +165,6 @@ namespace DynamoNTS.ImportExport
                     placemark.Add(new XElement(KmlNs + "description", descVal.ToString()));
                 }
 
-                // Add attributes to ExtendedData
                 if (exportLayer.Schema.FieldCount > 0)
                 {
                     var extendedData = new XElement(KmlNs + "ExtendedData");
@@ -216,9 +208,36 @@ namespace DynamoNTS.ImportExport
 
         #region Internal Helpers
 
-        private static NetTopologySuite.Geometries.Geometry? ParseGeometry(XElement placemark, GeometryFactory factory)
+        private static NetTopologySuite.Geometries.Geometry? ParseGeometry(XElement element, GeometryFactory factory)
         {
-            var pointElem = placemark.Descendants().FirstOrDefault(e => e.Name.LocalName == "Point");
+            // 1. MultiGeometry
+            var multiElem = element.Descendants().FirstOrDefault(e => e.Name.LocalName == "MultiGeometry");
+            if (multiElem != null)
+            {
+                var children = new List<NetTopologySuite.Geometries.Geometry>();
+                foreach (var child in multiElem.Elements())
+                {
+                    var parsed = ParseSingleGeometry(child, factory);
+                    if (parsed != null && !parsed.IsEmpty)
+                    {
+                        children.Add(parsed);
+                    }
+                }
+
+                if (children.Count > 0)
+                {
+                    return factory.BuildGeometry(children);
+                }
+            }
+
+            // 2. Geometría individual directa
+            return ParseSingleGeometry(element, factory);
+        }
+
+        private static NetTopologySuite.Geometries.Geometry? ParseSingleGeometry(XElement elem, GeometryFactory factory)
+        {
+            // Point
+            var pointElem = elem.DescendantsAndSelf().FirstOrDefault(e => e.Name.LocalName == "Point");
             if (pointElem != null)
             {
                 var coordsElem = pointElem.Elements().FirstOrDefault(e => e.Name.LocalName == "coordinates");
@@ -226,7 +245,8 @@ namespace DynamoNTS.ImportExport
                 if (coords.Length > 0) return factory.CreatePoint(coords[0]);
             }
 
-            var lineElem = placemark.Descendants().FirstOrDefault(e => e.Name.LocalName == "LineString");
+            // LineString
+            var lineElem = elem.DescendantsAndSelf().FirstOrDefault(e => e.Name.LocalName == "LineString");
             if (lineElem != null)
             {
                 var coordsElem = lineElem.Elements().FirstOrDefault(e => e.Name.LocalName == "coordinates");
@@ -234,17 +254,45 @@ namespace DynamoNTS.ImportExport
                 if (coords.Length >= 2) return factory.CreateLineString(coords);
             }
 
-            var polyElem = placemark.Descendants().FirstOrDefault(e => e.Name.LocalName == "Polygon");
+            // Polygon (con soporte de innerBoundaryIs)
+            var polyElem = elem.DescendantsAndSelf().FirstOrDefault(e => e.Name.LocalName == "Polygon");
             if (polyElem != null)
             {
-                var outerElem = polyElem.Descendants().FirstOrDefault(e => e.Name.LocalName == "outerBoundaryIs");
-                var ringElem = outerElem?.Descendants().FirstOrDefault(e => e.Name.LocalName == "LinearRing");
-                var coordsElem = ringElem?.Elements().FirstOrDefault(e => e.Name.LocalName == "coordinates");
-                var coords = ParseCoordinates(coordsElem?.Value);
-                if (coords.Length >= 4) return factory.CreatePolygon(coords);
+                var outerElem = polyElem.Elements().FirstOrDefault(e => e.Name.LocalName == "outerBoundaryIs");
+                var outerCoords = ParseCoordinates(outerElem?.Descendants().FirstOrDefault(e => e.Name.LocalName == "coordinates")?.Value);
+                if (outerCoords.Length < 3) return null;
+
+                var shell = CreateClosedRing(outerCoords, factory);
+
+                var holes = new List<LinearRing>();
+                var inners = polyElem.Elements().Where(e => e.Name.LocalName == "innerBoundaryIs");
+                foreach (var inner in inners)
+                {
+                    var innerCoords = ParseCoordinates(inner.Descendants().FirstOrDefault(e => e.Name.LocalName == "coordinates")?.Value);
+                    if (innerCoords.Length >= 3)
+                    {
+                        holes.Add(CreateClosedRing(innerCoords, factory));
+                    }
+                }
+
+                return factory.CreatePolygon(shell, holes.ToArray());
             }
 
             return null;
+        }
+
+        private static LinearRing CreateClosedRing(Coordinate[] coords, GeometryFactory factory)
+        {
+            var list = new List<Coordinate>(coords);
+            var first = list[0];
+            var last = list[list.Count - 1];
+
+            if (first.X != last.X || first.Y != last.Y || (!double.IsNaN(first.Z) && first.Z != last.Z))
+            {
+                list.Add(new CoordinateZ(first.X, first.Y, first.Z));
+            }
+
+            return factory.CreateLinearRing(list.ToArray());
         }
 
         private static Coordinate[] ParseCoordinates(string? coordString)
@@ -289,11 +337,49 @@ namespace DynamoNTS.ImportExport
 
             if (geometry is NetTopologySuite.Geometries.Polygon poly)
             {
-                string coords = string.Join(" ", poly.ExteriorRing.Coordinates.Select(FormatCoord));
-                return new XElement(KmlNs + "Polygon",
+                var polyElem = new XElement(KmlNs + "Polygon",
                     new XElement(KmlNs + "outerBoundaryIs",
                         new XElement(KmlNs + "LinearRing",
-                            new XElement(KmlNs + "coordinates", coords))));
+                            new XElement(KmlNs + "coordinates", string.Join(" ", poly.ExteriorRing.Coordinates.Select(FormatCoord))))));
+
+                for (int i = 0; i < poly.NumInteriorRings; i++)
+                {
+                    polyElem.Add(new XElement(KmlNs + "innerBoundaryIs",
+                        new XElement(KmlNs + "LinearRing",
+                            new XElement(KmlNs + "coordinates", string.Join(" ", poly.GetInteriorRingN(i).Coordinates.Select(FormatCoord))))));
+                }
+
+                return polyElem;
+            }
+
+            if (geometry is NetTopologySuite.Geometries.MultiPoint mp)
+            {
+                var multiElem = new XElement(KmlNs + "MultiGeometry");
+                for (int i = 0; i < mp.NumGeometries; i++)
+                {
+                    multiElem.Add(ConvertGeometryToKml(mp.GetGeometryN(i)));
+                }
+                return multiElem;
+            }
+
+            if (geometry is NetTopologySuite.Geometries.MultiLineString mls)
+            {
+                var multiElem = new XElement(KmlNs + "MultiGeometry");
+                for (int i = 0; i < mls.NumGeometries; i++)
+                {
+                    multiElem.Add(ConvertGeometryToKml(mls.GetGeometryN(i)));
+                }
+                return multiElem;
+            }
+
+            if (geometry is NetTopologySuite.Geometries.MultiPolygon mpoly)
+            {
+                var multiElem = new XElement(KmlNs + "MultiGeometry");
+                for (int i = 0; i < mpoly.NumGeometries; i++)
+                {
+                    multiElem.Add(ConvertGeometryToKml(mpoly.GetGeometryN(i)));
+                }
+                return multiElem;
             }
 
             return null;

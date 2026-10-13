@@ -5,7 +5,7 @@ using System;
 using System.Text;
 using NtsGeom = NetTopologySuite.Geometries.Geometry;
 
-namespace DynamoNTS.ImportExport
+namespace DynamoNTS.IO
 {
     /// <summary>
     /// Provides methods to serialize and deserialize geometries using the OGC Well-Known Binary (WKB) standard.

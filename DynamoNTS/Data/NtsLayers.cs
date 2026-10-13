@@ -1,22 +1,25 @@
 ﻿using Autodesk.DesignScript.Runtime;
-using DynamoNTS.Features;
-using DynamoNTS.Fields;
+using DynamoNTS.Data;
 using DynamoNTS.Geometry;
 using DynamoNTS.Projections;
 using NetTopologySuite.Features;
+using NetTopologySuite.Index.Strtree;
 using System;
 using System.Collections.Generic;
 using System.Linq;
 
-namespace DynamoNTS.Layers
+namespace DynamoNTS.Data
 {
     /// <summary>
-    /// Represents an in-memory GIS vector layer containing a unified schema, optional spatial reference, and features.
+    /// Represents an in-memory GIS vector layer containing a unified schema, spatial reference, indexation, and features.
     /// </summary>
     public class NtsLayer
     {
         [IsVisibleInDynamoLibrary(false)]
         internal FeatureCollection InternalCollection { get; }
+
+        [IsVisibleInDynamoLibrary(false)]
+        private readonly Lazy<STRtree<NtsFeature>> _spatialIndex;
 
         /// <summary>
         /// Gets the layer identifier name.
@@ -31,7 +34,28 @@ namespace DynamoNTS.Layers
         /// <summary>
         /// Gets the Coordinate Reference System (CRS) of the layer, or null if undefined.
         /// </summary>
-        public CoordinateSystem? CoordinateSystem { get; }
+        public NtsCoordinateSystem? CoordinateSystem { get; }
+
+        /// <summary>
+        /// Gets the formal OGC geometry type of the layer, or 'Mixed' if it contains heterogeneous geometries.
+        /// </summary>
+        public NtsGeometryType GeometryType { get; }
+
+        /// <summary>
+        /// Indicates whether all features in this layer share the same geometry type.
+        /// Essential for validating export compatibility with formats like ESRI Shapefile.
+        /// </summary>
+        public bool IsHomogeneous => GeometryType != NtsGeometryType.Mixed && GeometryType != NtsGeometryType.None;
+
+        /// <summary>
+        /// Indicates whether the layer contains valid 3D elevation coordinates (Z).
+        /// </summary>
+        public bool Is3D { get; }
+
+        /// <summary>
+        /// Gets the coordinate dimension: 3 for 3D coordinates (XYZ), otherwise 2 (XY).
+        /// </summary>
+        public int CoordinateDimension => Is3D ? 3 : 2;
 
         /// <summary>
         /// Gets the list of spatial features contained in this layer.
@@ -76,7 +100,7 @@ namespace DynamoNTS.Layers
             string name,
             NtsSchema schema,
             IEnumerable<NtsFeature> features,
-            CoordinateSystem? crs = null)
+            NtsCoordinateSystem? crs = null)
         {
             Name = string.IsNullOrWhiteSpace(name) ? "Layer" : name;
             Schema = schema ?? NtsSchema.Empty();
@@ -88,6 +112,13 @@ namespace DynamoNTS.Layers
             {
                 InternalCollection.Add(feature.InternalFeature);
             }
+
+            // Detección automática de metadatos espaciales
+            GeometryType = DetectGeometryType(Features);
+            Is3D = Features.Any(f => f?.Geometry != null && f.Geometry.HasZ);
+
+            // Inicialización diferida del índice espacial R-Tree (STRtree)
+            _spatialIndex = new Lazy<STRtree<NtsFeature>>(() => BuildSpatialIndex(Features));
         }
 
         #region Create Nodes
@@ -103,7 +134,7 @@ namespace DynamoNTS.Layers
         public static NtsLayer ByFeatures(
             IList<NtsFeature> features,
             string name = "Layer",
-            [DefaultArgument("null")] CoordinateSystem? coordinateSystem = null,
+            [DefaultArgument("null")] NtsCoordinateSystem? coordinateSystem = null,
             [DefaultArgument("null")] NtsSchema? schemaOverride = null)
         {
             if (features == null || features.Count == 0)
@@ -145,7 +176,7 @@ namespace DynamoNTS.Layers
         public static NtsLayer ByGeometries(
             IList<NtsGeometry> geometries,
             string name = "Layer",
-            [DefaultArgument("null")] CoordinateSystem? coordinateSystem = null)
+            [DefaultArgument("null")] NtsCoordinateSystem? coordinateSystem = null)
         {
             if (geometries == null || geometries.Count == 0)
                 throw new ArgumentException("The geometry collection cannot be null or empty.", nameof(geometries));
@@ -177,10 +208,81 @@ namespace DynamoNTS.Layers
         public static NtsLayer CreateEmpty(
             string name,
             NtsSchema schema,
-            [DefaultArgument("null")] CoordinateSystem? coordinateSystem = null)
+            [DefaultArgument("null")] NtsCoordinateSystem? coordinateSystem = null)
         {
             if (schema == null) throw new ArgumentNullException(nameof(schema));
             return new NtsLayer(name, schema, Enumerable.Empty<NtsFeature>(), coordinateSystem);
+        }
+
+        #endregion
+
+        #region Spatial Indexation & Fast Queries
+
+        /// <summary>
+        /// Performs an ultra-fast bounding-box spatial query using an in-memory R-Tree index (STRtree),
+        /// then evaluates exact topological intersection against candidate features.
+        /// </summary>
+        /// <param name="searchGeometry">The query geometry.</param>
+        /// <returns name="matchingFeatures">List of features intersecting the search geometry.</returns>
+        public List<NtsFeature> QueryIntersects(NtsGeometry searchGeometry)
+        {
+            if (searchGeometry == null || searchGeometry.InternalGeometry.IsEmpty)
+                return new List<NtsFeature>();
+
+            var searchEnvelope = searchGeometry.InternalGeometry.EnvelopeInternal;
+            var candidates = _spatialIndex.Value.Query(searchEnvelope);
+
+            var matches = new List<NtsFeature>();
+            foreach (var candidate in candidates)
+            {
+                if (candidate.Geometry.InternalGeometry.Intersects(searchGeometry.InternalGeometry))
+                {
+                    matches.Add(candidate);
+                }
+            }
+
+            return matches;
+        }
+
+        #endregion
+
+        #region Geometry Filtering & Conversions
+
+        /// <summary>
+        /// Extracts a new layer containing only features matching the requested geometry type.
+        /// Useful for decomposing mixed layers into homogeneous layers before exporting.
+        /// </summary>
+        /// <param name="targetType">The geometry type to filter by.</param>
+        /// <returns name="layer">A new NtsLayer with filtered features.</returns>
+        public NtsLayer FilterByGeometryType(NtsGeometryType targetType)
+        {
+            var matched = Features
+                .Where(f => f?.Geometry != null && f.Geometry.GeometryType == targetType)
+                .ToList();
+
+            return new NtsLayer($"{Name}_{targetType}", Schema, matched, CoordinateSystem);
+        }
+
+        /// <summary>
+        /// Produces a copy of the layer where all feature geometries are forced to 2D (clearing Z coordinates).
+        /// </summary>
+        /// <returns name="layer">A new 2D NtsLayer instance.</returns>
+        public NtsLayer Force2D()
+        {
+            var flatFeatures = new List<NtsFeature>();
+
+            foreach (var feat in Features)
+            {
+                if (feat?.Geometry == null) continue;
+
+                var flatGeom = feat.Geometry.Force2D();
+                if (flatGeom == null) continue;
+
+                var concreteFeature = new Feature(flatGeom.InternalGeometry, feat.Record.InternalTable);
+                flatFeatures.Add(new NtsFeature(concreteFeature, flatGeom, feat.Record));
+            }
+
+            return new NtsLayer($"{Name}_2D", Schema, flatFeatures, CoordinateSystem);
         }
 
         #endregion
@@ -221,14 +323,14 @@ namespace DynamoNTS.Layers
         #region Coordinate System Nodes
 
         /// <summary>
-        /// Assigns or updates the Coordinate Reference System metadata without altering geometric coordinates (like ArcGIS Define Projection).
+        /// Assigns or updates the Coordinate Reference System metadata without altering geometric coordinates.
         /// </summary>
-        /// <param name="coordinateSystem">The Coordinate Reference System to assign.</param>
+        /// <param name="ntsCoordinateSystem">The Coordinate Reference System to assign.</param>
         /// <returns name="layer">A new NtsLayer reference with the assigned CRS.</returns>
-        public NtsLayer SetCoordinateSystem(CoordinateSystem coordinateSystem)
+        public NtsLayer SetCoordinateSystem(NtsCoordinateSystem ntsCoordinateSystem)
         {
-            if (coordinateSystem == null) throw new ArgumentNullException(nameof(coordinateSystem));
-            return new NtsLayer(Name, Schema, Features, coordinateSystem);
+            if (ntsCoordinateSystem == null) throw new ArgumentNullException(nameof(ntsCoordinateSystem));
+            return new NtsLayer(Name, Schema, Features, ntsCoordinateSystem);
         }
 
         /// <summary>
@@ -236,7 +338,7 @@ namespace DynamoNTS.Layers
         /// </summary>
         /// <param name="targetCRS">The target Coordinate Reference System.</param>
         /// <returns name="reprojectedLayer">A new NtsLayer with reprojected geometries.</returns>
-        public NtsLayer Reproject(CoordinateSystem targetCRS)
+        public NtsLayer Reproject(NtsCoordinateSystem targetCRS)
         {
             if (CoordinateSystem == null)
             {
@@ -320,9 +422,74 @@ namespace DynamoNTS.Layers
             return NtsGeometry.WrapGeometry(poly);
         }
 
+        /// <summary>
+        /// Provides a structured spatial summary dictionary of the layer, ideal for inspection in Dynamo.
+        /// </summary>
+        /// <returns name="summary">Dictionary of layer metadata attributes.</returns>
+        public Dictionary<string, object> SpatialSummary()
+        {
+            var env = Extents()?.InternalGeometry?.EnvelopeInternal;
+
+            return new Dictionary<string, object>
+            {
+                { "Name", Name },
+                { "FeatureCount", Count },
+                { "GeometryType", GeometryType.ToString() },
+                { "IsHomogeneous", IsHomogeneous },
+                { "Dimension", Is3D ? "3D (XYZ)" : "2D (XY)" },
+                { "EPSG", CoordinateSystem?.EPSG ?? 0 },
+                { "CRS", CoordinateSystem?.Name ?? "Undefined" },
+                { "FieldCount", Schema.FieldCount },
+                { "XMin", env?.MinX ?? 0.0 },
+                { "YMin", env?.MinY ?? 0.0 },
+                { "XMax", env?.MaxX ?? 0.0 },
+                { "YMax", env?.MaxY ?? 0.0 }
+            };
+        }
+
         #endregion
 
         #region Helpers
+
+        private static NtsGeometryType DetectGeometryType(IEnumerable<NtsFeature> features)
+        {
+            NtsGeometryType? detected = null;
+
+            foreach (var f in features)
+            {
+                if (f?.Geometry == null || f.Geometry.InternalGeometry.IsEmpty) continue;
+
+                var current = f.Geometry.GeometryType;
+                if (current == NtsGeometryType.None) continue;
+
+                if (detected == null)
+                {
+                    detected = current;
+                }
+                else if (detected.Value != current)
+                {
+                    return NtsGeometryType.Mixed;
+                }
+            }
+
+            return detected ?? NtsGeometryType.None;
+        }
+
+        private static STRtree<NtsFeature> BuildSpatialIndex(IEnumerable<NtsFeature> features)
+        {
+            var tree = new STRtree<NtsFeature>();
+
+            foreach (var feat in features)
+            {
+                if (feat?.Geometry?.InternalGeometry != null && !feat.Geometry.InternalGeometry.IsEmpty)
+                {
+                    tree.Insert(feat.Geometry.InternalGeometry.EnvelopeInternal, feat);
+                }
+            }
+
+            tree.Build();
+            return tree;
+        }
 
         private static NtsSchema ResolveSchemaFromFeatures(IList<NtsFeature> features)
         {
@@ -349,8 +516,9 @@ namespace DynamoNTS.Layers
 
         public override string ToString()
         {
-            string crsText = CoordinateSystem != null ? CoordinateSystem.Name : "Undefined";
-            return $"NtsLayer(Name='{Name}', Features={Count}, Fields={Schema.FieldCount}, CRS={crsText})";
+            string crsText = CoordinateSystem != null ? (CoordinateSystem.EPSG != 0 ? $"EPSG:{CoordinateSystem.EPSG}" : CoordinateSystem.Name) : "Undefined";
+            string dimText = Is3D ? "3D" : "2D";
+            return $"NtsLayer(Name='{Name}', Features={Count}, Type={GeometryType}, Dim={dimText}, Fields={Schema.FieldCount}, CRS={crsText})";
         }
     }
 }

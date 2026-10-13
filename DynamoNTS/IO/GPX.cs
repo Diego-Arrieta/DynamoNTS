@@ -1,8 +1,7 @@
 ﻿using Autodesk.DesignScript.Runtime;
-using DynamoNTS.Features;
-using DynamoNTS.Fields;
+using DynamoNTS.Data;
 using DynamoNTS.Geometry;
-using DynamoNTS.Layers;
+using DynamoNTS.Data;
 using DynamoNTS.Projections;
 using NetTopologySuite.Geometries;
 using System;
@@ -12,7 +11,7 @@ using System.IO;
 using System.Linq;
 using System.Xml.Linq;
 
-namespace DynamoNTS.ImportExport
+namespace DynamoNTS.IO
 {
     /// <summary>
     /// Provides methods to import and export GPS Exchange Format (.gpx) vector datasets.
@@ -32,7 +31,7 @@ namespace DynamoNTS.ImportExport
         /// <returns name="layer">The loaded NtsLayer instance.</returns>
         public static NtsLayer Read(
             string filePath,
-            [DefaultArgument("null")] CoordinateSystem? targetCrs = null)
+            [DefaultArgument("null")] NtsCoordinateSystem? targetCrs = null)
         {
             if (string.IsNullOrWhiteSpace(filePath))
                 throw new ArgumentException("GPX file path cannot be null or empty.", nameof(filePath));
@@ -88,7 +87,7 @@ namespace DynamoNTS.ImportExport
                 features.Add(NtsFeature.ByRecord(lineGeom, record));
             }
 
-            // 3. Parse Tracks (<trk>) -> NtsLineString (per track segment)
+            // 3. Parse Tracks (<trk>) -> NtsLineString
             var tracks = doc.Descendants().Where(e => e.Name.LocalName == "trk");
             foreach (var trk in tracks)
             {
@@ -126,10 +125,9 @@ namespace DynamoNTS.ImportExport
                 : NtsSchema.Empty();
 
             string layerName = Path.GetFileNameWithoutExtension(filePath);
-            var layer = NtsLayer.ByFeatures(features, layerName, CoordinateSystem.WGS84, schema);
+            var layer = NtsLayer.ByFeatures(features, layerName, NtsCoordinateSystem.WGS84, schema);
 
-            // Reproject if a destination CRS was requested
-            if (targetCrs != null && targetCrs.EPSG != CoordinateSystem.WGS84.EPSG)
+            if (targetCrs != null && targetCrs.EPSG != NtsCoordinateSystem.WGS84.EPSG)
             {
                 return layer.Reproject(targetCrs);
             }
@@ -158,86 +156,81 @@ namespace DynamoNTS.ImportExport
                 Directory.CreateDirectory(dir);
             }
 
-            // GPX requires WGS84 (EPSG:4326)
             NtsLayer exportLayer = layer;
             if (layer.CoordinateSystem != null && layer.CoordinateSystem.EPSG != 4326)
             {
-                exportLayer = layer.Reproject(CoordinateSystem.WGS84);
+                exportLayer = layer.Reproject(NtsCoordinateSystem.WGS84);
+            }
+
+            // Metadatos raíz con límites geográficos (<bounds>)
+            var metadataElem = new XElement(GpxNs + "metadata",
+                new XElement(GpxNs + "name", exportLayer.Name));
+
+            var env = exportLayer.Extents()?.InternalGeometry?.EnvelopeInternal;
+            if (env != null && !env.IsNull)
+            {
+                metadataElem.Add(new XElement(GpxNs + "bounds",
+                    new XAttribute("minlat", env.MinY.ToString("F8", CultureInfo.InvariantCulture)),
+                    new XAttribute("minlon", env.MinX.ToString("F8", CultureInfo.InvariantCulture)),
+                    new XAttribute("maxlat", env.MaxY.ToString("F8", CultureInfo.InvariantCulture)),
+                    new XAttribute("maxlon", env.MaxX.ToString("F8", CultureInfo.InvariantCulture))));
             }
 
             var gpxRoot = new XElement(GpxNs + "gpx",
                 new XAttribute("version", "1.1"),
                 new XAttribute("creator", "DynamoNTS"),
-                new XElement(GpxNs + "metadata",
-                    new XElement(GpxNs + "name", exportLayer.Name)));
+                metadataElem);
 
             foreach (var feature in exportLayer.Features)
             {
                 if (feature?.Geometry == null) continue;
 
-                // Points -> <wpt>
+                // 1. Points & MultiPoints -> <wpt>
                 if (feature.Geometry is NtsPoint pt)
                 {
-                    var coord = pt.InternalGeometry.Coordinate;
-                    if (coord == null) continue;
-
-                    var wptElem = new XElement(GpxNs + "wpt",
-                        new XAttribute("lat", coord.Y.ToString("F8", CultureInfo.InvariantCulture)),
-                        new XAttribute("lon", coord.X.ToString("F8", CultureInfo.InvariantCulture)));
-
-                    if (!double.IsNaN(coord.Z))
-                    {
-                        wptElem.Add(new XElement(GpxNs + "ele", coord.Z.ToString("F3", CultureInfo.InvariantCulture)));
-                    }
-
-                    AppendFeatureMetadata(wptElem, feature);
-                    gpxRoot.Add(wptElem);
+                    AddWaypoint(gpxRoot, pt.InternalPoint.Coordinate, feature);
                 }
-                // LineStrings and Polygons -> <trk>
+                else if (feature.Geometry is NtsMultiPoint mp)
+                {
+                    foreach (var p in mp.Explode())
+                    {
+                        AddWaypoint(gpxRoot, p.InternalPoint.Coordinate, feature);
+                    }
+                }
+                // 2. LineStrings & MultiLineStrings -> <trk>
                 else if (feature.Geometry is NtsLineString line)
                 {
                     var trkElem = new XElement(GpxNs + "trk");
                     AppendFeatureMetadata(trkElem, feature);
-
-                    var trkSeg = new XElement(GpxNs + "trkseg");
-                    foreach (var coord in line.InternalGeometry.Coordinates)
-                    {
-                        var ptElem = new XElement(GpxNs + "trkpt",
-                            new XAttribute("lat", coord.Y.ToString("F8", CultureInfo.InvariantCulture)),
-                            new XAttribute("lon", coord.X.ToString("F8", CultureInfo.InvariantCulture)));
-
-                        if (!double.IsNaN(coord.Z))
-                        {
-                            ptElem.Add(new XElement(GpxNs + "ele", coord.Z.ToString("F3", CultureInfo.InvariantCulture)));
-                        }
-
-                        trkSeg.Add(ptElem);
-                    }
-
-                    trkElem.Add(trkSeg);
+                    trkElem.Add(CreateTrackSegment(line.InternalLineString.Coordinates));
                     gpxRoot.Add(trkElem);
                 }
+                else if (feature.Geometry is NtsMultiLineString mline)
+                {
+                    var trkElem = new XElement(GpxNs + "trk");
+                    AppendFeatureMetadata(trkElem, feature);
+                    foreach (var subLine in mline.Explode())
+                    {
+                        trkElem.Add(CreateTrackSegment(subLine.InternalLineString.Coordinates));
+                    }
+                    gpxRoot.Add(trkElem);
+                }
+                // 3. Polygons & MultiPolygons -> <trk>
                 else if (feature.Geometry is NtsPolygon poly)
                 {
                     var trkElem = new XElement(GpxNs + "trk");
                     AppendFeatureMetadata(trkElem, feature);
-
-                    var trkSeg = new XElement(GpxNs + "trkseg");
-                    foreach (var coord in poly.InternalPolygon.ExteriorRing.Coordinates)
+                    trkElem.Add(CreateTrackSegment(poly.InternalPolygon.ExteriorRing.Coordinates));
+                    gpxRoot.Add(trkElem);
+                }
+                else if (feature.Geometry is NtsMultiPolygon mpoly)
+                {
+                    var trkElem = new XElement(GpxNs + "trk");
+                    AppendFeatureMetadata(trkElem, feature);
+                    foreach (var subPoly in mpoly.Explode())
                     {
-                        var ptElem = new XElement(GpxNs + "trkpt",
-                            new XAttribute("lat", coord.Y.ToString("F8", CultureInfo.InvariantCulture)),
-                            new XAttribute("lon", coord.X.ToString("F8", CultureInfo.InvariantCulture)));
-
-                        if (!double.IsNaN(coord.Z))
-                        {
-                            ptElem.Add(new XElement(GpxNs + "ele", coord.Z.ToString("F3", CultureInfo.InvariantCulture)));
-                        }
-
-                        trkSeg.Add(ptElem);
+                        trkElem.Add(CreateTrackSegment(subPoly.InternalPolygon.ExteriorRing.Coordinates));
                     }
-
-                    trkElem.Add(trkSeg);
                     gpxRoot.Add(trkElem);
                 }
             }
@@ -251,6 +244,42 @@ namespace DynamoNTS.ImportExport
         #endregion
 
         #region Internal Helpers
+
+        private static void AddWaypoint(XElement root, Coordinate coord, NtsFeature feature)
+        {
+            if (coord == null) return;
+
+            var wptElem = new XElement(GpxNs + "wpt",
+                new XAttribute("lat", coord.Y.ToString("F8", CultureInfo.InvariantCulture)),
+                new XAttribute("lon", coord.X.ToString("F8", CultureInfo.InvariantCulture)));
+
+            if (!double.IsNaN(coord.Z))
+            {
+                wptElem.Add(new XElement(GpxNs + "ele", coord.Z.ToString("F3", CultureInfo.InvariantCulture)));
+            }
+
+            AppendFeatureMetadata(wptElem, feature);
+            root.Add(wptElem);
+        }
+
+        private static XElement CreateTrackSegment(Coordinate[] coordinates)
+        {
+            var trkSeg = new XElement(GpxNs + "trkseg");
+            foreach (var coord in coordinates)
+            {
+                var ptElem = new XElement(GpxNs + "trkpt",
+                    new XAttribute("lat", coord.Y.ToString("F8", CultureInfo.InvariantCulture)),
+                    new XAttribute("lon", coord.X.ToString("F8", CultureInfo.InvariantCulture)));
+
+                if (!double.IsNaN(coord.Z))
+                {
+                    ptElem.Add(new XElement(GpxNs + "ele", coord.Z.ToString("F3", CultureInfo.InvariantCulture)));
+                }
+
+                trkSeg.Add(ptElem);
+            }
+            return trkSeg;
+        }
 
         private static Coordinate? ParsePointCoordinate(XElement elem)
         {

@@ -1,9 +1,8 @@
 ﻿using Autodesk.DesignScript.Runtime;
-using DynamoNTS.Fields;
 using System;
 using System.Globalization;
 
-namespace DynamoNTS.Features
+namespace DynamoNTS.Data
 {
     /// <summary>
     /// Represents an atomic attribute cell consisting of a field specification and its typed value.

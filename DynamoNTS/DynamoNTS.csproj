@@ -9,7 +9,7 @@
   </PropertyGroup>
 
   <ItemGroup>
-    <EmbeddedResource Include="DynamoCustomization.xml" />
+    <EmbeddedResource Include="DynamoNTS_DynamoCustomization.xml" />
   </ItemGroup>
 
   <ItemGroup>
