@@ -60,7 +60,8 @@ namespace DynamoNTS.IO
             {
                 foreach (var dbfField in reader.Fields)
                 {
-                    var fieldType = MapFieldType(dbfField.FieldType);
+                    // B14: Infiere si el campo numérico es entero inspeccionando escala decimal
+                    var fieldType = MapFieldType(dbfField);
                     fields.Add(NtsField.ByNameAndType(dbfField.Name, fieldType, dbfField.Length));
                 }
             }
@@ -95,6 +96,7 @@ namespace DynamoNTS.IO
 
             string layerName = Path.GetFileNameWithoutExtension(shpPath);
 
+            // B09: Retornar layer vacío si el shapefile no contiene geometrías/registros
             if (features.Count == 0)
             {
                 var effectiveCrs = crsOverride ?? sourceCrs;
@@ -118,7 +120,7 @@ namespace DynamoNTS.IO
 
         /// <summary>
         /// Writes an NtsLayer to disk as an ESRI Shapefile dataset (.shp, .shx, .dbf, .prj, and .cpg).
-        /// Enforces homogeneous geometry constraints and automatically maps field types.
+        /// Enforces homogeneous geometry constraints, trims multibyte strings by byte length, and maps field types.
         /// </summary>
         /// <param name="layer">The NtsLayer to export.</param>
         /// <param name="shpPath">Target destination path (.shp).</param>
@@ -146,6 +148,7 @@ namespace DynamoNTS.IO
                 Directory.CreateDirectory(dir);
             }
 
+            // B11: Advertencia cuando la capa tiene Z, dado que NetTopologySuite.IO.Esri solo exporta geometrías 2D
             if (layer.Is3D)
             {
                 System.Diagnostics.Trace.TraceWarning(
@@ -154,7 +157,6 @@ namespace DynamoNTS.IO
             }
 
             var shapeType = ResolveShapeType(layer);
-
             var (dbfFields, fieldNameToDbfName) = BuildDbfFieldsMapping(layer.Schema.Fields);
 
             var options = new ShapefileWriterOptions(shapeType, dbfFields.ToArray())
@@ -174,16 +176,19 @@ namespace DynamoNTS.IO
                         string dbfName = fieldNameToDbfName[field.Name];
                         object? val = f.GetValue(field.Name);
 
+                        // B12: Validar y truncar cadenas midiendo BYTES en UTF-8 (máximo 254 bytes en DBF)
                         if (field.Type == NtsFieldType.String && val is string strVal)
                         {
                             int fieldLen = field.Length > 0 ? field.Length : 50;
-                            int maxAllowed = Math.Max(1, Math.Min(254, fieldLen));
-                            if (strVal.Length > maxAllowed)
+                            int maxBytesAllowed = Math.Max(1, Math.Min(254, fieldLen));
+
+                            int actualBytes = Encoding.UTF8.GetByteCount(strVal);
+                            if (actualBytes > maxBytesAllowed)
                             {
-                                string truncated = strVal.Substring(0, maxAllowed);
+                                string truncated = TruncateStringToUtf8Bytes(strVal, maxBytesAllowed);
                                 System.Diagnostics.Trace.TraceWarning(
-                                    $"[Shapefile.Write] Campo '{field.Name}' (DBF: '{dbfName}') truncado de {strVal.Length} a {maxAllowed} caracteres. " +
-                                    $"Valor: \"{strVal}\" -> \"{truncated}\"");
+                                    $"[Shapefile.Write] Field '{field.Name}' (DBF: '{dbfName}') truncated from {actualBytes} bytes to {Encoding.UTF8.GetByteCount(truncated)} bytes. " +
+                                    $"Value: \"{strVal}\" -> \"{truncated}\"");
                                 val = truncated;
                             }
                         }
@@ -195,10 +200,31 @@ namespace DynamoNTS.IO
                 }
             }
 
+            // B13: Escribir archivo .prj priorizando formato WKT ESRI si está disponible
             if (layer.CoordinateSystem?.InternalCRS != null)
             {
                 string prjPath = Path.ChangeExtension(shpPath, ".prj");
-                File.WriteAllText(prjPath, layer.CoordinateSystem.InternalCRS.WKT, Encoding.UTF8);
+                var crs = layer.CoordinateSystem.InternalCRS;
+
+                string prjWkt = crs.WKT;
+                var toEsriMethod = crs.GetType().GetMethod("ToEsriString", Type.EmptyTypes);
+                if (toEsriMethod != null)
+                {
+                    try
+                    {
+                        var esriWkt = toEsriMethod.Invoke(crs, null) as string;
+                        if (!string.IsNullOrWhiteSpace(esriWkt))
+                        {
+                            prjWkt = esriWkt;
+                        }
+                    }
+                    catch
+                    {
+                        // Fallback a WKT OGC estándar
+                    }
+                }
+
+                File.WriteAllText(prjPath, prjWkt, Encoding.UTF8);
             }
 
             string cpgPath = Path.ChangeExtension(shpPath, ".cpg");
@@ -213,8 +239,7 @@ namespace DynamoNTS.IO
 
         private static ShapeType ResolveShapeType(NtsLayer layer)
         {
-            // NetTopologySuite.IO.Esri solo implementa los tipos base 2D en ShapeType.
-            // Si la capa contiene coordenadas Z, se escribe la geometría plana compatible.
+            // B11: NetTopologySuite.IO.Esri define exclusivamente los tipos planos 2D
             return layer.GeometryType switch
             {
                 NtsGeometryType.Point => ShapeType.Point,
@@ -269,11 +294,23 @@ namespace DynamoNTS.IO
             return (dbfFields, mapping);
         }
 
-        private static NtsFieldType MapFieldType(DbfType type)
+        private static NtsFieldType MapFieldType(DbfField field)
         {
-            return type switch
+            // B14: Si el campo numérico no tiene decimales y cabe en 32 bits, mapear a Integer
+            if (field is DbfNumericInt32Field)
+                return NtsFieldType.Integer;
+
+            if (field.FieldType == DbfType.Numeric || field.FieldType == DbfType.Float)
             {
-                DbfType.Numeric or DbfType.Float => NtsFieldType.Double,
+                int decimalCount = GetDecimalCount(field);
+                if (decimalCount == 0 && field.Length <= 9)
+                    return NtsFieldType.Integer;
+
+                return NtsFieldType.Double;
+            }
+
+            return field.FieldType switch
+            {
                 DbfType.Date => NtsFieldType.Date,
                 DbfType.Logical => NtsFieldType.Boolean,
                 _ => NtsFieldType.String
@@ -282,15 +319,60 @@ namespace DynamoNTS.IO
 
         private static DbfField CreateDbfField(string dbfName, NtsFieldType type, int length)
         {
-            int charLen = length > 0 ? length : 50;
+            int byteLen = length > 0 ? length : 50;
+            byteLen = Math.Max(1, Math.Min(254, byteLen));
+
             return type switch
             {
                 NtsFieldType.Integer => new DbfNumericInt32Field(dbfName),
-                NtsFieldType.Double => new DbfNumericDoubleField(dbfName),
+                NtsFieldType.Double => new DbfNumericDoubleField(dbfName, 18, 8),
                 NtsFieldType.Boolean => new DbfLogicalField(dbfName),
                 NtsFieldType.Date => new DbfDateField(dbfName),
-                _ => new DbfCharacterField(dbfName, Math.Max(1, Math.Min(254, charLen)))
+                _ => new DbfCharacterField(dbfName, byteLen)
             };
+        }
+
+        /// <summary>
+        /// Trunca una cadena asegurando que su representación en bytes UTF-8
+        /// no supere maxBytes, sin cortar secuencias multibyte ni pares de sustitutos a la mitad.
+        /// </summary>
+        private static string TruncateStringToUtf8Bytes(string value, int maxBytes)
+        {
+            if (string.IsNullOrEmpty(value) || maxBytes <= 0) return string.Empty;
+
+            var utf8 = Encoding.UTF8;
+            if (utf8.GetByteCount(value) <= maxBytes) return value;
+
+            int currentBytes = 0;
+            int charIndex = 0;
+
+            while (charIndex < value.Length)
+            {
+                int charCount = char.IsSurrogatePair(value, charIndex) ? 2 : 1;
+                int nextCharBytes = utf8.GetByteCount(value.Substring(charIndex, charCount));
+
+                if (currentBytes + nextCharBytes > maxBytes)
+                    break;
+
+                currentBytes += nextCharBytes;
+                charIndex += charCount;
+            }
+
+            return value.Substring(0, charIndex);
+        }
+
+        /// <summary>
+        /// Inspecciona de forma segura la escala decimal de un campo DBF.
+        /// </summary>
+        private static int GetDecimalCount(DbfField field)
+        {
+            var prop = field.GetType().GetProperty("DecimalCount");
+            if (prop != null && prop.CanRead)
+            {
+                var val = prop.GetValue(field, null);
+                if (val is int count) return count;
+            }
+            return 0;
         }
 
         #endregion
