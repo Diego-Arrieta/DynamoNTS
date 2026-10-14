@@ -37,12 +37,17 @@ namespace DynamoNTS.Geometry
         /// </summary>
         /// <param name="polygon">The base Dynamo Polygon.</param>
         /// <returns name="polygon">The topological polygon in NTS.</returns>
-        public static NtsPolygon ByPolygon(DynGeometry.Polygon polygon)
+        public static NtsPolygon ByPolygon(
+            DynGeometry.Polygon polygon,
+            [DefaultArgument("false")] bool keepZ = false)
         {
             if (polygon == null) throw new ArgumentNullException(nameof(polygon));
 
             var points = polygon.Points;
-            var coords = points.Select(pt => new NtsGeometries.CoordinateZ(pt.X, pt.Y, pt.Z)).ToArray();
+            var coords = points.Select(pt => keepZ
+                ? (NtsGeometries.Coordinate)new NtsGeometries.CoordinateZ(pt.X, pt.Y, pt.Z)
+                : new NtsGeometries.Coordinate(pt.X, pt.Y)
+            ).ToArray();
 
             foreach (var pt in points)
             {
@@ -87,17 +92,19 @@ namespace DynamoNTS.Geometry
         /// </summary>
         /// <param name="exteriorCurve">The closed outer boundary PolyCurve.</param>
         /// <param name="interiorCurves">Optional list of closed PolyCurves representing holes.</param>
+        /// <param name="keepZ">If true, preserves elevation (Z) from curves. Defaults to false (2D).</param>
         /// <returns name="polygon">The topological polygon with holes.</returns>
         public static NtsPolygon ByPolyCurves(
             DynGeometry.PolyCurve exteriorCurve,
-            [DefaultArgument("null")] IList<DynGeometry.PolyCurve>? interiorCurves = null)
+            [DefaultArgument("null")] IList<DynGeometry.PolyCurve>? interiorCurves = null,
+            [DefaultArgument("false")] bool keepZ = false)
         {
             if (exteriorCurve == null) throw new ArgumentNullException(nameof(exteriorCurve));
 
-            var extLine = NtsLineString.ByPolyCurve(exteriorCurve);
+            var extLine = NtsLineString.ByPolyCurve(exteriorCurve, keepZ);
             var holeLines = interiorCurves?
                 .Where(c => c != null)
-                .Select(NtsLineString.ByPolyCurve)
+                .Select(c => NtsLineString.ByPolyCurve(c, keepZ))
                 .ToList();
 
             return ByRings(extLine, holeLines);

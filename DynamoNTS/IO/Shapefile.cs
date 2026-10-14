@@ -26,6 +26,7 @@ namespace DynamoNTS.IO
 
         /// <summary>
         /// Reads an ESRI Shapefile from disk, preserving its native CRS or reprojecting geometries if a target CRS is provided.
+        /// Handles empty shapefiles gracefully by returning an empty NtsLayer with the schema extracted from DBF.
         /// </summary>
         /// <param name="shpPath">Full path to the .shp file.</param>
         /// <param name="crsOverride">Optional target Coordinate Reference System. If provided, layer geometries are reprojected.</param>
@@ -93,6 +94,13 @@ namespace DynamoNTS.IO
             }
 
             string layerName = Path.GetFileNameWithoutExtension(shpPath);
+
+            if (features.Count == 0)
+            {
+                var effectiveCrs = crsOverride ?? sourceCrs;
+                return NtsLayer.CreateEmpty(layerName, schema, effectiveCrs);
+            }
+
             var nativeLayer = NtsLayer.ByFeatures(features, layerName, sourceCrs, schema);
 
             if (crsOverride != null)
@@ -136,6 +144,13 @@ namespace DynamoNTS.IO
             if (!string.IsNullOrEmpty(dir) && !Directory.Exists(dir))
             {
                 Directory.CreateDirectory(dir);
+            }
+
+            if (layer.Is3D)
+            {
+                System.Diagnostics.Trace.TraceWarning(
+                    $"[Shapefile.Write] Warning: Layer '{layer.Name}' contains 3D components (Z), but " +
+                    "NetTopologySuite.IO.Esri only supports 2D planar geometries. Elevation (Z) coordinates will not be included in the .shp file.");
             }
 
             var shapeType = ResolveShapeType(layer);
@@ -198,6 +213,8 @@ namespace DynamoNTS.IO
 
         private static ShapeType ResolveShapeType(NtsLayer layer)
         {
+            // NetTopologySuite.IO.Esri solo implementa los tipos base 2D en ShapeType.
+            // Si la capa contiene coordenadas Z, se escribe la geometría plana compatible.
             return layer.GeometryType switch
             {
                 NtsGeometryType.Point => ShapeType.Point,

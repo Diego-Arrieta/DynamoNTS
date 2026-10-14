@@ -37,25 +37,44 @@ namespace DynamoNTS.Geometry
         /// Creates an NtsPoint from a native Dynamo Point.
         /// </summary>
         /// <param name="point">The base Dynamo geometric point.</param>
+        /// <param name="keepZ">If true, preserves the elevation (Z) from the Dynamo point. Defaults to false (2D).</param>
         /// <returns name="NtsPoint">The equivalent topological point in NTS.</returns>
-        public static NtsPoint ByPoint(DynGeometry.Point point)
+        public static NtsPoint ByPoint(
+            DynGeometry.Point point,
+            [DefaultArgument("false")] bool keepZ = false)
         {
             if (point == null) throw new ArgumentNullException(nameof(point));
 
-            var coordinate = new NtsGeometries.CoordinateZ(point.X, point.Y, point.Z);
+            var coordinate = keepZ
+                ? (NtsGeometries.Coordinate)new NtsGeometries.CoordinateZ(point.X, point.Y, point.Z)
+                : new NtsGeometries.Coordinate(point.X, point.Y);
+
+            var ntsPoint = NtsGeometries.GeometryFactory.Default.CreatePoint(coordinate);
+            return new NtsPoint(ntsPoint);
+        }
+
+        /// <summary>
+        /// Creates a strictly 2D topological NtsPoint from planar X and Y coordinates.
+        /// </summary>
+        /// <param name="x">Easting coordinate (X)</param>
+        /// <param name="y">Northing coordinate (Y)</param>
+        /// <returns name="NtsPoint">The 2D topological point in NTS.</returns>
+        public static NtsPoint ByCoordinates(double x, double y)
+        {
+            var coordinate = new NtsGeometries.Coordinate(x, y);
             var ntsPoint = NtsGeometries.GeometryFactory.Default.CreatePoint(coordinate);
 
             return new NtsPoint(ntsPoint);
         }
 
         /// <summary>
-        /// Creates an NtsPoint directly from numeric coordinates.
+        /// Creates a 3D topological NtsPoint with explicit elevation (Z).
         /// </summary>
         /// <param name="x">Easting coordinate (X)</param>
         /// <param name="y">Northing coordinate (Y)</param>
-        /// <param name="z">Elevation (Z) - Optional</param>
-        /// <returns name="NtsPoint">The topological point in NTS.</returns>
-        public static NtsPoint ByCoordinates(double x, double y, double z = 0.0)
+        /// <param name="z">Elevation (Z)</param>
+        /// <returns name="NtsPoint">The 3D topological point in NTS.</returns>
+        public static NtsPoint ByCoordinatesXYZ(double x, double y, double z)
         {
             var coordinate = new NtsGeometries.CoordinateZ(x, y, z);
             var ntsPoint = NtsGeometries.GeometryFactory.Default.CreatePoint(coordinate);

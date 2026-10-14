@@ -34,7 +34,7 @@ namespace DynamoNTS.Geometry
         #region Create Nodes
 
         /// <summary>
-        /// Creates an NtsLineString from a list of NtsPoints.
+        /// Creates an NtsLineString from a list of NtsPoints, preserving 3D coordinates if any point has elevation.
         /// </summary>
         /// <param name="points">List of topological NTS points.</param>
         /// <returns name="NtsLineString">The equivalent topological line string in NTS.</returns>
@@ -45,9 +45,13 @@ namespace DynamoNTS.Geometry
             var ntsPoints = points.ToList();
             if (ntsPoints.Count < 2) throw new ArgumentException("A LineString requires at least 2 points.");
 
-            var coordinates = ntsPoints.Select(p => new NtsGeometries.CoordinateZ(p.X, p.Y, p.Z)).ToArray();
+            bool is3D = ntsPoints.Any(p => p.HasZ);
 
-            // CoordinateList vacía con Add(..., false) para forzar la eliminación de duplicados consecutivos
+            var coordinates = ntsPoints.Select(p => is3D
+                ? (NtsGeometries.Coordinate)new NtsGeometries.CoordinateZ(p.X, p.Y, p.HasZ ? p.Z : 0.0)
+                : new NtsGeometries.Coordinate(p.X, p.Y)
+            ).ToArray();
+
             var coordList = new NtsGeometries.CoordinateList();
             coordList.Add(coordinates, false);
             var cleanCoords = coordList.ToCoordinateArray();
@@ -62,8 +66,11 @@ namespace DynamoNTS.Geometry
         /// Creates an NtsLineString by extracting the vertices of a Dynamo PolyCurve.
         /// </summary>
         /// <param name="polyCurve">The base Dynamo PolyCurve.</param>
+        /// <param name="keepZ">If true, preserves elevation (Z) from curves. Defaults to false (2D).</param>
         /// <returns name="NtsLineString">The topological line string in NTS.</returns>
-        public static NtsLineString ByPolyCurve(DynGeometry.PolyCurve polyCurve)
+        public static NtsLineString ByPolyCurve(
+            DynGeometry.PolyCurve polyCurve,
+            [DefaultArgument("false")] bool keepZ = false)
         {
             if (polyCurve == null) throw new ArgumentNullException(nameof(polyCurve));
 
@@ -73,14 +80,20 @@ namespace DynamoNTS.Geometry
             foreach (var curve in curves)
             {
                 var start = curve.StartPoint;
-                coordinates.Add(new NtsGeometries.CoordinateZ(start.X, start.Y, start.Z));
+                if (keepZ)
+                    coordinates.Add(new NtsGeometries.CoordinateZ(start.X, start.Y, start.Z));
+                else
+                    coordinates.Add(new NtsGeometries.Coordinate(start.X, start.Y));
 
                 start.Dispose();
                 curve.Dispose();
             }
 
             var endPoint = polyCurve.EndPoint;
-            coordinates.Add(new NtsGeometries.CoordinateZ(endPoint.X, endPoint.Y, endPoint.Z));
+            if (keepZ)
+                coordinates.Add(new NtsGeometries.CoordinateZ(endPoint.X, endPoint.Y, endPoint.Z));
+            else
+                coordinates.Add(new NtsGeometries.Coordinate(endPoint.X, endPoint.Y));
             endPoint.Dispose();
 
             var coordList = new NtsGeometries.CoordinateList();
