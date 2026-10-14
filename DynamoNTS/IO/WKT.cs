@@ -2,7 +2,6 @@
 using DynamoNTS.Geometry;
 using NetTopologySuite.IO;
 using System;
-using NtsGeom = NetTopologySuite.Geometries.Geometry;
 
 namespace DynamoNTS.IO
 {
@@ -16,14 +15,14 @@ namespace DynamoNTS.IO
         /// <summary>
         /// Parses an OGC Well-Known Text (WKT) string into an NtsGeometry.
         /// </summary>
-        /// <param name="wktString">The WKT geometry string (e.g., 'POLYGON ((0 0, 10 0, 10 10, 0 0))').</param>
+        /// <param name="wkt">The WKT geometry string (e.g., 'POLYGON ((0 0, 10 0, 10 10, 0 0))').</param>
         /// <returns name="geometry">The imported topological geometry.</returns>
         public static NtsGeometry FromText(string wkt)
         {
             if (string.IsNullOrWhiteSpace(wkt))
                 throw new ArgumentException("WKT string cannot be null or empty.", nameof(wkt));
 
-            var reader = new NetTopologySuite.IO.WKTReader();
+            var reader = new WKTReader();
             var ntsGeom = reader.Read(wkt);
 
             var wrapped = NtsGeometry.WrapGeometry(ntsGeom);
@@ -31,7 +30,7 @@ namespace DynamoNTS.IO
         }
 
         /// <summary>
-        /// Converts an NtsGeometry into its standard OGC Well-Known Text (WKT) string representation.
+        /// Converts an NtsGeometry into its standard OGC Well-Known Text (WKT) string representation, preserving 3D coordinates if present.
         /// </summary>
         /// <param name="geometry">The topological geometry to export.</param>
         /// <returns name="wktString">The WKT string representation.</returns>
@@ -39,7 +38,7 @@ namespace DynamoNTS.IO
         {
             if (geometry == null) throw new ArgumentNullException(nameof(geometry));
 
-            var writer = new WKTWriter();
+            var writer = geometry.HasZ ? new WKTWriter(3) : new WKTWriter();
             return writer.Write(geometry.InternalGeometry);
         }
 

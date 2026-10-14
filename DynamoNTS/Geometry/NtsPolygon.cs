@@ -224,10 +224,9 @@ namespace DynamoNTS.Geometry
             var first = coordsList[0];
             var last = coordsList[coordsList.Count - 1];
 
-            // Ensure the ring is explicitly closed
-            if (first.X != last.X || first.Y != last.Y || first.Z != last.Z)
+            if (!first.Equals2D(last))
             {
-                coordsList.Add(new NtsGeometries.CoordinateZ(first.X, first.Y, first.Z));
+                coordsList.Add(first.Copy());
             }
 
             if (coordsList.Count < 4)

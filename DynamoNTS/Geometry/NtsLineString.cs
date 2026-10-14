@@ -47,7 +47,10 @@ namespace DynamoNTS.Geometry
 
             var coordinates = ntsPoints.Select(p => new NtsGeometries.CoordinateZ(p.X, p.Y, p.Z)).ToArray();
 
-            var cleanCoords = new NtsGeometries.CoordinateList(coordinates).ToCoordinateArray();
+            // CoordinateList vacía con Add(..., false) para forzar la eliminación de duplicados consecutivos
+            var coordList = new NtsGeometries.CoordinateList();
+            coordList.Add(coordinates, false);
+            var cleanCoords = coordList.ToCoordinateArray();
 
             if (cleanCoords.Length < 2) throw new ArgumentException("The provided points do not form a valid LineString after cleaning duplicates.");
 
@@ -80,7 +83,9 @@ namespace DynamoNTS.Geometry
             coordinates.Add(new NtsGeometries.CoordinateZ(endPoint.X, endPoint.Y, endPoint.Z));
             endPoint.Dispose();
 
-            var cleanCoords = new NtsGeometries.CoordinateList(coordinates.ToArray()).ToCoordinateArray();
+            var coordList = new NtsGeometries.CoordinateList();
+            coordList.Add(coordinates.ToArray(), false);
+            var cleanCoords = coordList.ToCoordinateArray();
 
             if (cleanCoords.Length < 2) throw new ArgumentException("PolyCurve must have at least 2 distinct vertices.");
 

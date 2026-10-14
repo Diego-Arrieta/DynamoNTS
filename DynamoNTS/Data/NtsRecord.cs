@@ -242,14 +242,16 @@ namespace DynamoNTS.Data
 
             string canonicalKey = ResolveKey(attribute.Name);
 
-            // Eliminar variantes ortográficas previas en la tabla para evitar duplicados
             string? existingTableKey = FindTableKey(canonicalKey);
             if (existingTableKey != null && !string.Equals(existingTableKey, canonicalKey, StringComparison.Ordinal))
             {
                 InternalTable.DeleteAttribute(existingTableKey);
             }
 
-            InternalTable[canonicalKey] = attribute.Value;
+            if (InternalTable.Exists(canonicalKey))
+                InternalTable[canonicalKey] = attribute.Value;
+            else
+                InternalTable.Add(canonicalKey, attribute.Value);
 
             if (Schema.FieldByName(canonicalKey) == null)
             {
@@ -291,7 +293,10 @@ namespace DynamoNTS.Data
 
             string canonicalKey = ResolveKey(rawName);
 
-            var schemaField = Schema.FieldByName(canonicalKey) ?? (field as NtsField) ?? NtsField.ByNameAndType(canonicalKey, NtsAttribute.InferType(value));
+            var schemaField = Schema.FieldByName(canonicalKey)
+                              ?? (field as NtsField)
+                              ?? NtsField.ByNameAndType(canonicalKey, NtsAttribute.InferType(value));
+
             object? coerced = NtsAttribute.CoerceValue(value, schemaField);
 
             string? existingTableKey = FindTableKey(canonicalKey);
@@ -300,7 +305,11 @@ namespace DynamoNTS.Data
                 InternalTable.DeleteAttribute(existingTableKey);
             }
 
-            InternalTable[canonicalKey] = coerced;
+            // Safe set / add
+            if (InternalTable.Exists(canonicalKey))
+                InternalTable[canonicalKey] = coerced;
+            else
+                InternalTable.Add(canonicalKey, coerced);
 
             if (Schema.FieldByName(canonicalKey) == null)
             {

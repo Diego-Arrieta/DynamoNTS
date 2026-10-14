@@ -1,5 +1,6 @@
 ﻿using Autodesk.DesignScript.Runtime;
 using DynamoNTS.Geometry;
+using NetTopologySuite.Geometries;
 using NetTopologySuite.IO;
 using System;
 using System.Text;
@@ -63,7 +64,7 @@ namespace DynamoNTS.IO
         }
 
         /// <summary>
-        /// Converts an NtsGeometry into raw WKB binary bytes.
+        /// Converts an NtsGeometry into raw WKB binary bytes, preserving 3D coordinates if present.
         /// </summary>
         /// <param name="geometry">The topological geometry to serialize.</param>
         /// <returns name="bytes">Raw byte array representation.</returns>
@@ -72,7 +73,12 @@ namespace DynamoNTS.IO
             if (geometry is null)
                 throw new ArgumentNullException(nameof(geometry));
 
-            var writer = new WKBWriter();
+            var ordinates = geometry.HasZ ? Ordinates.XYZ : Ordinates.XY;
+            var writer = new WKBWriter(ByteOrder.LittleEndian, false)
+            {
+                HandleOrdinates = ordinates
+            };
+
             return writer.Write(geometry.InternalGeometry);
         }
 
@@ -94,7 +100,7 @@ namespace DynamoNTS.IO
 
         private static byte[] HexToBytes(string hex)
         {
-            if (string.IsNullOrWhiteSpace(hex)) return [];
+            if (string.IsNullOrWhiteSpace(hex)) return new byte[0];
 
             int numberChars = hex.Length;
             byte[] bytes = new byte[numberChars / 2];
