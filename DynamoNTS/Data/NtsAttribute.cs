@@ -77,8 +77,7 @@ namespace DynamoNTS.Data
                 switch (field.Type)
                 {
                     case NtsFieldType.String:
-                        string s = rawValue.ToString() ?? string.Empty;
-                        return s.Length > field.Length ? s.Substring(0, field.Length) : s;
+                        return rawValue.ToString() ?? string.Empty;
 
                     case NtsFieldType.Integer:
                         return Convert.ToInt32(rawValue, CultureInfo.InvariantCulture);

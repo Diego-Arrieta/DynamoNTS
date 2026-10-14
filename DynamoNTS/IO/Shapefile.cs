@@ -128,7 +128,6 @@ namespace DynamoNTS.IO
             if (layer.Count == 0)
                 throw new InvalidOperationException("Cannot write an empty layer to Shapefile.");
 
-            // 1. Validación estricta de homogeneidad de geometrías
             if (!layer.IsHomogeneous)
             {
                 throw new InvalidOperationException(
@@ -143,13 +142,10 @@ namespace DynamoNTS.IO
                 Directory.CreateDirectory(dir);
             }
 
-            // 2. Determinar el ShapeType base compatible con NetTopologySuite.IO.Esri
             var shapeType = ResolveShapeType(layer);
 
-            // 3. Crear definición y mapeo de nombres para columnas DBF (máximo 10 caracteres)
             var (dbfFields, fieldNameToDbfName) = BuildDbfFieldsMapping(layer.Schema.Fields);
 
-            // 4. Configurar el escritor con soporte UTF-8
             var options = new ShapefileWriterOptions(shapeType, dbfFields.ToArray())
             {
                 Encoding = Encoding.UTF8
@@ -173,14 +169,12 @@ namespace DynamoNTS.IO
                 }
             }
 
-            // 5. Escribir metadatos de proyección (.prj) si el CRS está definido
             if (layer.CoordinateSystem?.InternalCRS != null)
             {
                 string prjPath = Path.ChangeExtension(shpPath, ".prj");
                 File.WriteAllText(prjPath, layer.CoordinateSystem.InternalCRS.WKT, Encoding.UTF8);
             }
 
-            // 6. Escribir archivo de codificación de caracteres (.cpg) para QGIS y ArcGIS
             string cpgPath = Path.ChangeExtension(shpPath, ".cpg");
             File.WriteAllText(cpgPath, "UTF-8", Encoding.ASCII);
 
@@ -211,17 +205,14 @@ namespace DynamoNTS.IO
 
             foreach (var field in fields)
             {
-                // 1. Saneamiento inicial: caracteres alfanuméricos y guiones bajos
                 string sanitized = Regex.Replace(field.Name.Trim(), @"[^a-zA-Z0-9_]", "_");
                 if (string.IsNullOrWhiteSpace(sanitized))
                 {
                     sanitized = "ATTR";
                 }
 
-                // 2. Truncar a máximo 10 caracteres
                 string candidate = sanitized.Length > 10 ? sanitized.Substring(0, 10) : sanitized;
 
-                // 3. Resolver colisiones agregando sufijos numéricos (_1, _2...) sin exceder 10 caracteres
                 if (usedDbfNames.Contains(candidate))
                 {
                     int counter = 1;
@@ -244,7 +235,6 @@ namespace DynamoNTS.IO
                 usedDbfNames.Add(candidate);
                 mapping[field.Name] = candidate;
 
-                // 4. Crear el campo DBF tipificado con el nombre saneado
                 dbfFields.Add(CreateDbfField(candidate, field.Type, field.Length));
             }
 

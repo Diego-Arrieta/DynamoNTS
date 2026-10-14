@@ -34,7 +34,8 @@ namespace DynamoNTS.IO
         /// <returns name="hexString">The hexadecimal representation of the geometry.</returns>
         public static string ToHex(NtsGeometry geometry)
         {
-            ArgumentNullException.ThrowIfNull(geometry);
+            if (geometry is null)
+                throw new ArgumentNullException(nameof(geometry));
 
             var bytes = ToBytes(geometry);
             return BytesToHex(bytes);
@@ -68,7 +69,8 @@ namespace DynamoNTS.IO
         /// <returns name="bytes">Raw byte array representation.</returns>
         public static byte[] ToBytes(NtsGeometry geometry)
         {
-            ArgumentNullException.ThrowIfNull(geometry);
+            if (geometry is null)
+                throw new ArgumentNullException(nameof(geometry));
 
             var writer = new WKBWriter();
             return writer.Write(geometry.InternalGeometry);

@@ -3,7 +3,6 @@ using NetTopologySuite.Algorithm;
 using System;
 using System.Collections.Generic;
 using System.Linq;
-using System.Reflection.Metadata;
 using DynGeometry = Autodesk.DesignScript.Geometry;
 using NtsGeometries = NetTopologySuite.Geometries;
 
