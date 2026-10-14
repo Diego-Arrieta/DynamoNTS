@@ -23,7 +23,7 @@ namespace DynamoNTS.Data
         /// <summary>
         /// List of all column names registered in this record.
         /// </summary>
-        public List<string> Keys => InternalTable.GetNames().ToList();
+        public List<string> Keys => Schema.FieldCount > 0 ? Schema.FieldNames : InternalTable.GetNames().ToList();
 
         /// <summary>
         /// Total number of attribute columns in this record.
@@ -75,13 +75,13 @@ namespace DynamoNTS.Data
             foreach (var attr in attributes)
             {
                 if (attr == null) continue;
-                table.Add(attr.Name, attr.Value);
+                string canonicalName = schema?.FieldByName(attr.Name)?.Name ?? attr.Name;
+                table.Add(canonicalName, attr.Value);
                 detectedFields.Add(attr.Field);
             }
 
             var finalSchema = schema ?? NtsSchema.ByFields(detectedFields);
 
-            // Ensure all schema fields exist in the table (populate missing ones with null)
             foreach (var field in finalSchema.Fields)
             {
                 if (!table.Exists(field.Name))
@@ -145,6 +145,55 @@ namespace DynamoNTS.Data
 
         #endregion
 
+        #region Key Resolution
+
+        /// <summary>
+        /// Resolves a field identifier to its canonical schema or table key (case-insensitive).
+        /// </summary>
+        /// <param name="name">The raw field name.</param>
+        /// <returns>The canonical key name.</returns>
+        [IsVisibleInDynamoLibrary(false)]
+        public string ResolveKey(string name)
+        {
+            if (string.IsNullOrWhiteSpace(name)) return name;
+
+            // 1. Prioridad: Esquema formal registrado
+            var schemaField = Schema?.FieldByName(name);
+            if (schemaField != null)
+                return schemaField.Name;
+
+            // 2. Prioridad: Clave existente en la tabla interna
+            if (InternalTable != null)
+            {
+                if (InternalTable.Exists(name))
+                    return name;
+
+                foreach (var existingName in InternalTable.GetNames())
+                {
+                    if (string.Equals(existingName, name, StringComparison.OrdinalIgnoreCase))
+                        return existingName;
+                }
+            }
+
+            return name.Trim();
+        }
+
+        private string? FindTableKey(string canonicalKey)
+        {
+            if (InternalTable.Exists(canonicalKey))
+                return canonicalKey;
+
+            foreach (var existing in InternalTable.GetNames())
+            {
+                if (string.Equals(existing, canonicalKey, StringComparison.OrdinalIgnoreCase))
+                    return existing;
+            }
+
+            return null;
+        }
+
+        #endregion
+
         #region Action / Query Nodes
 
         /// <summary>
@@ -156,7 +205,7 @@ namespace DynamoNTS.Data
             var list = new List<NtsAttribute>();
             foreach (var field in Schema.Fields)
             {
-                object? val = InternalTable.Exists(field.Name) ? InternalTable[field.Name] : null;
+                object? val = GetValue(field.Name);
                 list.Add(new NtsAttribute(field, val is DBNull ? null : val));
             }
             return list;
@@ -169,18 +218,21 @@ namespace DynamoNTS.Data
         /// <returns name="attribute">The corresponding NtsAttribute cell, or null if not found.</returns>
         public NtsAttribute? GetAttribute(object field)
         {
-            string? fieldName = ExtractFieldName(field);
-            if (string.IsNullOrWhiteSpace(fieldName) || !InternalTable.Exists(fieldName))
-                return null;
+            string? rawName = ExtractFieldName(field);
+            if (string.IsNullOrWhiteSpace(rawName)) return null;
 
-            var val = InternalTable[fieldName];
-            var f = Schema.FieldByName(fieldName) ?? (field as NtsField) ?? NtsField.ByNameAndType(fieldName, NtsAttribute.InferType(val));
+            string canonicalKey = ResolveKey(rawName);
+            string? tableKey = FindTableKey(canonicalKey);
+            if (tableKey == null) return null;
+
+            var val = InternalTable[tableKey];
+            var f = Schema.FieldByName(canonicalKey) ?? (field as NtsField) ?? NtsField.ByNameAndType(canonicalKey, NtsAttribute.InferType(val));
 
             return new NtsAttribute(f, val is DBNull ? null : val);
         }
 
         /// <summary>
-        /// Inserts or updates an individual atomic NtsAttribute cell in this record.
+        /// Inserts or updates an individual atomic NtsAttribute cell in this record using canonical key resolution.
         /// </summary>
         /// <param name="attribute">The attribute cell to set.</param>
         /// <returns name="record">The updated NtsRecord.</returns>
@@ -188,9 +240,18 @@ namespace DynamoNTS.Data
         {
             if (attribute == null) throw new ArgumentNullException(nameof(attribute));
 
-            InternalTable[attribute.Name] = attribute.Value;
+            string canonicalKey = ResolveKey(attribute.Name);
 
-            if (Schema.FieldByName(attribute.Name) == null)
+            // Eliminar variantes ortográficas previas en la tabla para evitar duplicados
+            string? existingTableKey = FindTableKey(canonicalKey);
+            if (existingTableKey != null && !string.Equals(existingTableKey, canonicalKey, StringComparison.Ordinal))
+            {
+                InternalTable.DeleteAttribute(existingTableKey);
+            }
+
+            InternalTable[canonicalKey] = attribute.Value;
+
+            if (Schema.FieldByName(canonicalKey) == null)
             {
                 Schema = Schema.AddField(attribute.Field);
             }
@@ -199,37 +260,49 @@ namespace DynamoNTS.Data
         }
 
         /// <summary>
-        /// Gets the raw attribute value by column name or NtsField definition.
+        /// Gets the raw attribute value by column name or NtsField definition using canonical key resolution.
         /// </summary>
         /// <param name="field">Column name (string) or NtsField definition.</param>
         /// <returns name="value">The attribute value, or null if not set.</returns>
         public object? GetValue(object field)
         {
-            string? name = ExtractFieldName(field);
-            if (string.IsNullOrWhiteSpace(name) || !InternalTable.Exists(name)) return null;
+            string? rawName = ExtractFieldName(field);
+            if (string.IsNullOrWhiteSpace(rawName)) return null;
 
-            var val = InternalTable[name];
+            string canonicalKey = ResolveKey(rawName);
+            string? tableKey = FindTableKey(canonicalKey);
+            if (tableKey == null) return null;
+
+            var val = InternalTable[tableKey];
             return val is DBNull ? null : val;
         }
 
         /// <summary>
-        /// Sets or updates a raw attribute value by column name or NtsField definition.
+        /// Sets or updates a raw attribute value by column name or NtsField definition using canonical key resolution.
         /// </summary>
         /// <param name="field">Column name (string) or NtsField definition.</param>
         /// <param name="value">The value to set.</param>
         /// <returns name="record">The updated NtsRecord.</returns>
         public NtsRecord SetValue(object field, object? value)
         {
-            string? name = ExtractFieldName(field);
-            if (string.IsNullOrWhiteSpace(name))
+            string? rawName = ExtractFieldName(field);
+            if (string.IsNullOrWhiteSpace(rawName))
                 throw new ArgumentException("Invalid field identifier.");
 
-            var schemaField = Schema.FieldByName(name) ?? (field as NtsField) ?? NtsField.ByNameAndType(name, NtsAttribute.InferType(value));
+            string canonicalKey = ResolveKey(rawName);
+
+            var schemaField = Schema.FieldByName(canonicalKey) ?? (field as NtsField) ?? NtsField.ByNameAndType(canonicalKey, NtsAttribute.InferType(value));
             object? coerced = NtsAttribute.CoerceValue(value, schemaField);
 
-            InternalTable[name] = coerced;
+            string? existingTableKey = FindTableKey(canonicalKey);
+            if (existingTableKey != null && !string.Equals(existingTableKey, canonicalKey, StringComparison.Ordinal))
+            {
+                InternalTable.DeleteAttribute(existingTableKey);
+            }
 
-            if (Schema.FieldByName(name) == null)
+            InternalTable[canonicalKey] = coerced;
+
+            if (Schema.FieldByName(canonicalKey) == null)
             {
                 Schema = Schema.AddField(schemaField);
             }
@@ -238,12 +311,12 @@ namespace DynamoNTS.Data
         }
 
         /// <summary>
-        /// Converts the record into a native Dynamo dictionary.
+        /// Converts the record into a native Dynamo dictionary with case-insensitive key comparison.
         /// </summary>
         /// <returns name="dictionary">A Dynamo dictionary.</returns>
         public Dictionary<string, object?> ToDictionary()
         {
-            var dict = new Dictionary<string, object?>();
+            var dict = new Dictionary<string, object?>(StringComparer.OrdinalIgnoreCase);
             foreach (var field in Schema.Fields)
             {
                 dict[field.Name] = GetValue(field.Name);
@@ -266,23 +339,12 @@ namespace DynamoNTS.Data
 
         #region Indexers
 
-        /// <summary>
-        /// Gets or sets an attribute value by field column name using square-bracket indexing.
-        /// Example: record["DIAMETRO"] = 250;
-        /// </summary>
-        /// <param name="fieldName">Field column name.</param>
-        /// <returns>The attribute value, or null if not found.</returns>
         public object? this[string fieldName]
         {
             get => GetValue(fieldName);
             set => SetValue(fieldName, value);
         }
 
-        /// <summary>
-        /// Gets or sets an attribute value by formal NtsField definition using square-bracket indexing.
-        /// </summary>
-        /// <param name="field">The NtsField instance.</param>
-        /// <returns>The attribute value, or null if not found.</returns>
         public object? this[NtsField field]
         {
             get => GetValue(field);
@@ -290,6 +352,8 @@ namespace DynamoNTS.Data
         }
 
         #endregion
+
+        [IsVisibleInDynamoLibrary(false)]
         public override string ToString()
         {
             return $"NtsRecord({Count} Attributes: {string.Join(", ", Keys)})";

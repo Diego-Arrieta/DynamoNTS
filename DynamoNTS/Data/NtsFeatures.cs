@@ -107,6 +107,21 @@ namespace DynamoNTS.Data
 
         #endregion
 
+        #region Key Resolution
+
+        /// <summary>
+        /// Resolves an attribute column name to its canonical key in this feature's record.
+        /// </summary>
+        /// <param name="fieldName">Field name to resolve.</param>
+        /// <returns name="canonicalKey">The resolved canonical field name.</returns>
+        [IsVisibleInDynamoLibrary(false)]
+        public string ResolveKey(string fieldName)
+        {
+            return Record.ResolveKey(fieldName);
+        }
+
+        #endregion
+
         #region Action / Query Nodes
 
         /// <summary>
@@ -162,7 +177,7 @@ namespace DynamoNTS.Data
         }
 
         #endregion
-        
+
         #region Indexers
 
         /// <summary>
@@ -189,6 +204,8 @@ namespace DynamoNTS.Data
         }
 
         #endregion
+
+        [IsVisibleInDynamoLibrary(false)]
         public override string ToString()
         {
             string geomType = Geometry?.GeometryType.ToString() ?? "None";

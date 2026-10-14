@@ -113,11 +113,9 @@ namespace DynamoNTS.Data
                 InternalCollection.Add(feature.InternalFeature);
             }
 
-            // Detección automática de metadatos espaciales
             GeometryType = DetectGeometryType(Features);
             Is3D = Features.Any(f => f?.Geometry != null && f.Geometry.HasZ);
 
-            // Inicialización diferida del índice espacial R-Tree (STRtree)
             _spatialIndex = new Lazy<STRtree<NtsFeature>>(() => BuildSpatialIndex(Features));
         }
 
@@ -150,7 +148,8 @@ namespace DynamoNTS.Data
                 var cleanTable = new AttributesTable();
                 foreach (var field in schema.Fields)
                 {
-                    object? rawVal = feat.GetValue(field.Name);
+                    string canonicalKey = feat.ResolveKey(field.Name);
+                    object? rawVal = feat.GetValue(canonicalKey);
                     cleanTable.Add(field.Name, NtsAttribute.CoerceValue(rawVal, field));
                 }
 
@@ -304,7 +303,8 @@ namespace DynamoNTS.Data
                 var table = new AttributesTable();
                 foreach (var field in newSchema.Fields)
                 {
-                    object? existingVal = feat.GetValue(field.Name);
+                    string canonicalKey = feat.ResolveKey(field.Name);
+                    object? existingVal = feat.GetValue(canonicalKey);
                     table.Add(field.Name, NtsAttribute.CoerceValue(existingVal, field));
                 }
 
@@ -521,27 +521,40 @@ namespace DynamoNTS.Data
 
         private static NtsSchema ResolveSchemaFromFeatures(IList<NtsFeature> features)
         {
-            var fieldsMap = new Dictionary<string, NtsField>(StringComparer.OrdinalIgnoreCase);
+            if (features == null || features.Count == 0)
+                return NtsSchema.Empty();
+
+            var fieldNames = new List<string>();
+            var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
 
             foreach (var f in features)
             {
                 if (f?.Record == null) continue;
                 foreach (var field in f.Record.Fields)
                 {
-                    if (!fieldsMap.ContainsKey(field.Name))
+                    if (seen.Add(field.Name))
                     {
-                        fieldsMap[field.Name] = field;
+                        fieldNames.Add(field.Name);
                     }
                 }
             }
 
-            return fieldsMap.Count > 0
-                ? NtsSchema.ByFields(fieldsMap.Values.ToList())
-                : NtsSchema.Empty();
+            if (fieldNames.Count == 0)
+                return NtsSchema.Empty();
+
+            var inferredFields = new List<NtsField>();
+            foreach (var name in fieldNames)
+            {
+                var colValues = features.Select(f => f?.GetValue(name));
+                inferredFields.Add(NtsField.InferField(name, colValues));
+            }
+
+            return NtsSchema.ByFields(inferredFields);
         }
 
         #endregion
 
+        [IsVisibleInDynamoLibrary(false)]
         public override string ToString()
         {
             string crsText = CoordinateSystem != null ? (CoordinateSystem.EPSG != 0 ? $"EPSG:{CoordinateSystem.EPSG}" : CoordinateSystem.Name) : "Undefined";

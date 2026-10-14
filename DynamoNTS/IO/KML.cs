@@ -45,12 +45,13 @@ namespace DynamoNTS.IO
                 throw new InvalidOperationException("No Placemarks were found in the provided KML file.");
 
             var features = new List<NtsFeature>();
-            var fieldsMap = new Dictionary<string, NtsField>(StringComparer.OrdinalIgnoreCase);
+            var fieldNames = new List<string>();
+            var seenNames = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
             var geomFactory = GeometryFactory.Default;
 
             foreach (var placemark in placemarks)
             {
-                // 1. Parse Geometry (incluyendo MultiGeometry y polígonos con huecos)
+                // 1. Parse Geometry (including MultiGeometry and polygons with holes)
                 var ntsGeom = ParseGeometry(placemark, geomFactory);
                 if (ntsGeom == null || ntsGeom.IsEmpty) continue;
 
@@ -86,12 +87,11 @@ namespace DynamoNTS.IO
                     }
                 }
 
-                // Registrar atributos en el diccionario de campos
-                foreach (var kvp in rawAttrs)
+                foreach (var key in rawAttrs.Keys)
                 {
-                    if (!fieldsMap.ContainsKey(kvp.Key))
+                    if (seenNames.Add(key))
                     {
-                        fieldsMap[kvp.Key] = NtsField.ByNameAndType(kvp.Key, NtsAttribute.InferType(kvp.Value));
+                        fieldNames.Add(key);
                     }
                 }
 
@@ -102,8 +102,15 @@ namespace DynamoNTS.IO
             if (features.Count == 0)
                 throw new InvalidOperationException("No valid geometries could be parsed from the KML Placemarks.");
 
-            var schema = fieldsMap.Count > 0
-                ? NtsSchema.ByFields(fieldsMap.Values.ToList())
+            var inferredFields = new List<NtsField>();
+            foreach (var name in fieldNames)
+            {
+                var values = features.Select(feat => feat.GetValue(name));
+                inferredFields.Add(NtsField.InferField(name, values));
+            }
+
+            var schema = inferredFields.Count > 0
+                ? NtsSchema.ByFields(inferredFields)
                 : NtsSchema.Empty();
 
             string layerName = Path.GetFileNameWithoutExtension(filePath);
@@ -230,7 +237,7 @@ namespace DynamoNTS.IO
                 }
             }
 
-            // 2. Geometría individual directa
+            // 2. Direct individual geometry
             return ParseSingleGeometry(element, factory);
         }
 
@@ -254,7 +261,7 @@ namespace DynamoNTS.IO
                 if (coords.Length >= 2) return factory.CreateLineString(coords);
             }
 
-            // Polygon (con soporte de innerBoundaryIs)
+            // Polygon (supporting innerBoundaryIs)
             var polyElem = elem.DescendantsAndSelf().FirstOrDefault(e => e.Name.LocalName == "Polygon");
             if (polyElem != null)
             {

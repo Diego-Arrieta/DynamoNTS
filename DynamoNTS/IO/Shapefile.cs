@@ -40,7 +40,6 @@ namespace DynamoNTS.IO
             if (!File.Exists(shpPath))
                 throw new FileNotFoundException($"Shapefile not found: '{shpPath}'");
 
-            // 1. Resolver el CRS nativo desde el archivo .prj
             NtsCoordinateSystem? sourceCrs = null;
             string prjPath = Path.ChangeExtension(shpPath, ".prj");
             if (File.Exists(prjPath))
@@ -55,7 +54,6 @@ namespace DynamoNTS.IO
                 }
             }
 
-            // 2. Extraer el esquema formal de atributos desde los encabezados DBF
             var fields = new List<NtsField>();
             using (var reader = NetTopologySuite.IO.Esri.Shapefile.OpenRead(shpPath))
             {
@@ -67,7 +65,6 @@ namespace DynamoNTS.IO
             }
             var schema = NtsSchema.ByFields(fields);
 
-            // 3. Leer todas las entidades espaciales con sus atributos
             var rawFeatures = NetTopologySuite.IO.Esri.Shapefile.ReadAllFeatures(shpPath);
             var features = new List<NtsFeature>();
 
@@ -98,7 +95,6 @@ namespace DynamoNTS.IO
             string layerName = Path.GetFileNameWithoutExtension(shpPath);
             var nativeLayer = NtsLayer.ByFeatures(features, layerName, sourceCrs, schema);
 
-            // 4. Reproyectar si se especificó un CRS destino diferente
             if (crsOverride != null)
             {
                 if (sourceCrs != null)
@@ -162,6 +158,21 @@ namespace DynamoNTS.IO
                     {
                         string dbfName = fieldNameToDbfName[field.Name];
                         object? val = f.GetValue(field.Name);
+
+                        if (field.Type == NtsFieldType.String && val is string strVal)
+                        {
+                            int fieldLen = field.Length > 0 ? field.Length : 50;
+                            int maxAllowed = Math.Max(1, Math.Min(254, fieldLen));
+                            if (strVal.Length > maxAllowed)
+                            {
+                                string truncated = strVal.Substring(0, maxAllowed);
+                                System.Diagnostics.Trace.TraceWarning(
+                                    $"[Shapefile.Write] Campo '{field.Name}' (DBF: '{dbfName}') truncado de {strVal.Length} a {maxAllowed} caracteres. " +
+                                    $"Valor: \"{strVal}\" -> \"{truncated}\"");
+                                val = truncated;
+                            }
+                        }
+
                         table.Add(dbfName, (val is DBNull) ? null : val);
                     }
 
@@ -254,13 +265,14 @@ namespace DynamoNTS.IO
 
         private static DbfField CreateDbfField(string dbfName, NtsFieldType type, int length)
         {
+            int charLen = length > 0 ? length : 50;
             return type switch
             {
                 NtsFieldType.Integer => new DbfNumericInt32Field(dbfName),
                 NtsFieldType.Double => new DbfNumericDoubleField(dbfName),
                 NtsFieldType.Boolean => new DbfLogicalField(dbfName),
                 NtsFieldType.Date => new DbfDateField(dbfName),
-                _ => new DbfCharacterField(dbfName, length)
+                _ => new DbfCharacterField(dbfName, Math.Max(1, Math.Min(254, charLen)))
             };
         }
 

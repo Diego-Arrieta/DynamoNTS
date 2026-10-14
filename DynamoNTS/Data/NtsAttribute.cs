@@ -104,10 +104,27 @@ namespace DynamoNTS.Data
         [IsVisibleInDynamoLibrary(false)]
         internal static NtsFieldType InferType(object? value)
         {
-            if (value is int || value is short || value is long) return NtsFieldType.Integer;
-            if (value is double || value is float || value is decimal) return NtsFieldType.Double;
-            if (value is bool) return NtsFieldType.Boolean;
-            if (value is DateTime) return NtsFieldType.Date;
+            if (value is int || value is short || value is byte || value is sbyte || value is ushort)
+                return NtsFieldType.Integer;
+
+            if (value is long l)
+                return (l >= int.MinValue && l <= int.MaxValue) ? NtsFieldType.Integer : NtsFieldType.Double;
+
+            if (value is uint ui)
+                return (ui <= int.MaxValue) ? NtsFieldType.Integer : NtsFieldType.Double;
+
+            if (value is ulong ul)
+                return (ul <= (ulong)int.MaxValue) ? NtsFieldType.Integer : NtsFieldType.Double;
+
+            if (value is double || value is float || value is decimal)
+                return NtsFieldType.Double;
+
+            if (value is bool)
+                return NtsFieldType.Boolean;
+
+            if (value is DateTime)
+                return NtsFieldType.Date;
+
             return NtsFieldType.String;
         }
 

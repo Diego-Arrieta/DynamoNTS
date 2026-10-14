@@ -43,7 +43,8 @@ namespace DynamoNTS.IO
                 throw new InvalidOperationException("No features could be parsed from the provided GeoJSON.");
 
             var features = new List<NtsFeature>();
-            var fieldsMap = new Dictionary<string, NtsField>(StringComparer.OrdinalIgnoreCase);
+            var fieldNames = new List<string>();
+            var seenNames = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
 
             foreach (var f in featureCollection)
             {
@@ -60,9 +61,9 @@ namespace DynamoNTS.IO
                         var val = f.Attributes[name];
                         table.Add(name, val);
 
-                        if (!fieldsMap.ContainsKey(name))
+                        if (seenNames.Add(name))
                         {
-                            fieldsMap[name] = NtsField.ByNameAndType(name, NtsAttribute.InferType(val));
+                            fieldNames.Add(name);
                         }
                     }
                 }
@@ -72,7 +73,14 @@ namespace DynamoNTS.IO
                 features.Add(new NtsFeature(concreteFeature, wrappedGeom, attrs));
             }
 
-            var schema = NtsSchema.ByFields(fieldsMap.Values.ToList());
+            var inferredFields = new List<NtsField>();
+            foreach (var name in fieldNames)
+            {
+                var values = features.Select(feat => feat.GetValue(name));
+                inferredFields.Add(NtsField.InferField(name, values));
+            }
+
+            var schema = NtsSchema.ByFields(inferredFields);
             var crs = crsOverride ?? NtsCoordinateSystem.WGS84;
             string layerName = File.Exists(filePathOrJson) ? Path.GetFileNameWithoutExtension(filePathOrJson) : "GeoJsonLayer";
 

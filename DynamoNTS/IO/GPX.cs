@@ -42,7 +42,19 @@ namespace DynamoNTS.IO
             var geomFactory = GeometryFactory.Default;
 
             var features = new List<NtsFeature>();
-            var fieldsMap = new Dictionary<string, NtsField>(StringComparer.OrdinalIgnoreCase);
+            var fieldNames = new List<string>();
+            var seenNames = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+
+            void TrackFieldNames(Dictionary<string, object?> attrs)
+            {
+                foreach (var key in attrs.Keys)
+                {
+                    if (seenNames.Add(key))
+                    {
+                        fieldNames.Add(key);
+                    }
+                }
+            }
 
             // 1. Parse Waypoints (<wpt>) -> NtsPoint
             var waypoints = doc.Descendants().Where(e => e.Name.LocalName == "wpt");
@@ -57,7 +69,7 @@ namespace DynamoNTS.IO
                 var rawAttrs = ExtractStandardAttributes(wpt);
                 rawAttrs["Type"] = "Waypoint";
 
-                RegisterFields(rawAttrs, fieldsMap);
+                TrackFieldNames(rawAttrs);
                 var record = NtsRecord.FromDictionary(rawAttrs);
                 features.Add(NtsFeature.ByRecord(pointGeom, record));
             }
@@ -81,7 +93,7 @@ namespace DynamoNTS.IO
                 var rawAttrs = ExtractStandardAttributes(rte);
                 rawAttrs["Type"] = "Route";
 
-                RegisterFields(rawAttrs, fieldsMap);
+                TrackFieldNames(rawAttrs);
                 var record = NtsRecord.FromDictionary(rawAttrs);
                 features.Add(NtsFeature.ByRecord(lineGeom, record));
             }
@@ -109,7 +121,7 @@ namespace DynamoNTS.IO
                     if (lineGeom == null) continue;
 
                     var rawAttrs = new Dictionary<string, object?>(trackAttrs, StringComparer.OrdinalIgnoreCase);
-                    RegisterFields(rawAttrs, fieldsMap);
+                    TrackFieldNames(rawAttrs);
 
                     var record = NtsRecord.FromDictionary(rawAttrs);
                     features.Add(NtsFeature.ByRecord(lineGeom, record));
@@ -119,8 +131,15 @@ namespace DynamoNTS.IO
             if (features.Count == 0)
                 throw new InvalidOperationException("No valid waypoints, routes, or tracks could be parsed from the GPX file.");
 
-            var schema = fieldsMap.Count > 0
-                ? NtsSchema.ByFields(fieldsMap.Values.ToList())
+            var inferredFields = new List<NtsField>();
+            foreach (var name in fieldNames)
+            {
+                var values = features.Select(feat => feat.GetValue(name));
+                inferredFields.Add(NtsField.InferField(name, values));
+            }
+
+            var schema = inferredFields.Count > 0
+                ? NtsSchema.ByFields(inferredFields)
                 : NtsSchema.Empty();
 
             string layerName = Path.GetFileNameWithoutExtension(filePath);
@@ -161,7 +180,7 @@ namespace DynamoNTS.IO
                 exportLayer = layer.Reproject(NtsCoordinateSystem.WGS84);
             }
 
-            // Metadatos raíz con límites geográficos (<bounds>)
+            // Root metadata with geographical extents (<bounds>)
             var metadataElem = new XElement(GpxNs + "metadata",
                 new XElement(GpxNs + "name", exportLayer.Name));
 
@@ -338,17 +357,6 @@ namespace DynamoNTS.IO
             }
 
             return attrs;
-        }
-
-        private static void RegisterFields(Dictionary<string, object?> attrs, Dictionary<string, NtsField> fieldsMap)
-        {
-            foreach (var kvp in attrs)
-            {
-                if (!fieldsMap.ContainsKey(kvp.Key))
-                {
-                    fieldsMap[kvp.Key] = NtsField.ByNameAndType(kvp.Key, NtsAttribute.InferType(kvp.Value));
-                }
-            }
         }
 
         private static void AppendFeatureMetadata(XElement targetElem, NtsFeature feature)
