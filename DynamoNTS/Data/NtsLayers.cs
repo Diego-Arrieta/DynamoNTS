@@ -40,7 +40,7 @@ namespace DynamoNTS.Data
         /// Gets or sets the origin source of the layer's Coordinate Reference System.
         /// Possible values include: "prj", "override", "unreadable", or "none".
         /// </summary>
-        public string CrsSource { get; set; } = "none";
+        public string CrsSource { get; internal set; } = "none";
 
         /// <summary>
         /// Gets the formal attribute schema shared across all features in this layer.
@@ -63,7 +63,6 @@ namespace DynamoNTS.Data
 
         public int CoordinateDimension => Is3D ? 3 : 2;
 
-        // 2. Propiedad pública que Dynamo expone (retorna la copia defensiva)
         /// <summary>
         /// Gets a defensive copy of the spatial features contained in this layer.
         /// </summary>
@@ -107,7 +106,8 @@ namespace DynamoNTS.Data
             string name,
             NtsSchema schema,
             IEnumerable<NtsFeature> features,
-            NtsCoordinateSystem? crs = null)
+            NtsCoordinateSystem? crs = null,
+            string crsSource = "none")
         {
             Name = string.IsNullOrWhiteSpace(name) ? "Layer" : name;
             Schema = schema ?? NtsSchema.Empty();
@@ -347,6 +347,7 @@ namespace DynamoNTS.Data
 
         /// <summary>
         /// Reprojects all geometries in the layer to a target Coordinate Reference System. Requires the layer to have a defined CRS.
+        /// Pre-compiles the transformation once for the entire layer to optimize batch execution.
         /// </summary>
         /// <param name="targetCRS">The target Coordinate Reference System.</param>
         /// <returns name="reprojectedLayer">A new NtsLayer with reprojected geometries.</returns>
@@ -359,15 +360,25 @@ namespace DynamoNTS.Data
 
             if (targetCRS == null) throw new ArgumentNullException(nameof(targetCRS));
 
-            var reprojectedFeatures = new List<NtsFeature>();
-            foreach (var feature in Features)
+            if (CoordinateSystem.IsEquivalentTo(targetCRS))
             {
-                reprojectedFeatures.Add(Reprojector.TransformFeature(feature, CoordinateSystem, targetCRS));
+                var clonedFeatures = Features.Select(f => f.Clone()).ToList();
+                return new NtsLayer(Name, Schema, clonedFeatures, targetCRS, "reprojected");
             }
 
-            return new NtsLayer(Name, Schema, reprojectedFeatures, targetCRS);
-        }
+            // Instancia la transformación matemática y el filtro con buffer reutilizable una única vez para la capa
+            var filter = Reprojector.CreateFilter(CoordinateSystem, targetCRS);
+            int targetSrid = targetCRS.EPSG;
 
+            var reprojectedFeatures = new List<NtsFeature>(Count);
+            foreach (var feature in Features)
+            {
+                if (feature?.Geometry == null) continue;
+                reprojectedFeatures.Add(Reprojector.TransformFeature(feature, filter, targetSrid));
+            }
+
+            return new NtsLayer(Name, Schema, reprojectedFeatures, targetCRS, "reprojected");
+        }
         #endregion
 
         #region Action & Query Nodes

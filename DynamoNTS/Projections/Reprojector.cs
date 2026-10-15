@@ -1,4 +1,5 @@
-﻿using DynamoNTS.Data;
+﻿using Autodesk.DesignScript.Runtime;
+using DynamoNTS.Data;
 using DynamoNTS.Geometry;
 using NetTopologySuite.Features;
 using NetTopologySuite.Geometries;
@@ -9,6 +10,7 @@ namespace DynamoNTS.Projections
 {
     /// <summary>
     /// Provides mathematical coordinate reprojection and transformations between Coordinate Reference Systems.
+    /// Supports both 2D planar transformations and 3D coordinate transformations with elevation preservation.
     /// </summary>
     public static class Reprojector
     {
@@ -16,7 +18,7 @@ namespace DynamoNTS.Projections
 
         /// <summary>
         /// Reprojects an NtsGeometry from a source Coordinate Reference System to a target Coordinate Reference System.
-        /// If both systems are equivalent, a copy of the geometry with updated SRID is returned without reprojecting.
+        /// Preserves elevation (Z) coordinates, transforming them when a 3D datum shift is required.
         /// </summary>
         /// <param name="geometry">The topological geometry to reproject.</param>
         /// <param name="source">The source coordinate reference system.</param>
@@ -41,22 +43,8 @@ namespace DynamoNTS.Projections
                 return NtsGeometry.WrapGeometry(copy);
             }
 
-            var transformFactory = new CoordinateTransformationFactory();
-            var transformation = transformFactory.CreateFromCoordinateSystems(
-                source.InternalCRS,
-                target.InternalCRS);
-
-            var cloned = (NetTopologySuite.Geometries.Geometry)geometry.InternalGeometry.Copy();
-            var filter = new CoordinateTransformationFilter(transformation.MathTransform);
-            cloned.Apply(filter);
-            cloned.GeometryChanged();
-
-            if (target.EPSG != 0)
-            {
-                cloned.SRID = target.EPSG;
-            }
-
-            return NtsGeometry.WrapGeometry(cloned);
+            var filter = CreateFilter(source, target);
+            return TransformGeometry(geometry, filter, target.EPSG);
         }
 
         /// <summary>
@@ -75,15 +63,13 @@ namespace DynamoNTS.Projections
             if (source == null) throw new ArgumentNullException(nameof(source));
             if (target == null) throw new ArgumentNullException(nameof(target));
 
-            var reprojectedGeometry = TransformGeometry(feature.Geometry, source, target);
-            if (reprojectedGeometry == null)
+            if (source.IsEquivalentTo(target))
             {
-                throw new InvalidOperationException("Failed to reproject feature geometry.");
+                return feature.Clone();
             }
 
-            var clonedRecord = feature.Record.Clone();
-            var concreteFeature = new Feature(reprojectedGeometry.InternalGeometry, clonedRecord.InternalTable);
-            return new NtsFeature(concreteFeature, reprojectedGeometry, clonedRecord);
+            var filter = CreateFilter(source, target);
+            return TransformFeature(feature, filter, target.EPSG);
         }
 
         /// <summary>
@@ -113,20 +99,126 @@ namespace DynamoNTS.Projections
                 source.InternalCRS,
                 target.InternalCRS);
 
-            return transformation.MathTransform.Transform(new[] { x, y });
+            var mathTransform = transformation.MathTransform;
+            if (mathTransform.DimSource >= 3)
+            {
+                var input3D = new[] { x, y, 0.0 };
+                var output3D = mathTransform.Transform(input3D);
+                return new[] { output3D[0], output3D[1] };
+            }
+
+            return mathTransform.Transform(new[] { x, y });
+        }
+
+        /// <summary>
+        /// Reprojects a single 3D coordinate triplet directly, preserving or transforming elevation.
+        /// </summary>
+        /// <param name="x">X / Easting / Longitude coordinate.</param>
+        /// <param name="y">Y / Northing / Latitude coordinate.</param>
+        /// <param name="z">Z / Elevation coordinate.</param>
+        /// <param name="source">Source coordinate reference system.</param>
+        /// <param name="target">Target coordinate reference system.</param>
+        /// <returns name="coordinates">An array containing the transformed [X, Y, Z] coordinates.</returns>
+        public static double[] TransformPoint3D(
+            double x,
+            double y,
+            double z,
+            NtsCoordinateSystem source,
+            NtsCoordinateSystem target)
+        {
+            if (source == null) throw new ArgumentNullException(nameof(source));
+            if (target == null) throw new ArgumentNullException(nameof(target));
+
+            if (source.IsEquivalentTo(target))
+            {
+                return new[] { x, y, z };
+            }
+
+            var transformFactory = new CoordinateTransformationFactory();
+            var transformation = transformFactory.CreateFromCoordinateSystems(
+                source.InternalCRS,
+                target.InternalCRS);
+
+            var mathTransform = transformation.MathTransform;
+            if (mathTransform.DimSource >= 3)
+            {
+                return mathTransform.Transform(new[] { x, y, z });
+            }
+
+            var xy = mathTransform.Transform(new[] { x, y });
+            return new[] { xy[0], xy[1], z };
+        }
+
+        #endregion
+
+        #region Internal Batch Helpers
+
+        [IsVisibleInDynamoLibrary(false)]
+        internal static CoordinateTransformationFilter CreateFilter(
+            NtsCoordinateSystem source,
+            NtsCoordinateSystem target)
+        {
+            var transformFactory = new CoordinateTransformationFactory();
+            var transformation = transformFactory.CreateFromCoordinateSystems(
+                source.InternalCRS,
+                target.InternalCRS);
+
+            return new CoordinateTransformationFilter(transformation.MathTransform);
+        }
+
+        [IsVisibleInDynamoLibrary(false)]
+        internal static NtsGeometry? TransformGeometry(
+            NtsGeometry geometry,
+            CoordinateTransformationFilter filter,
+            int targetSrid = 0)
+        {
+            if (geometry == null) return null;
+
+            var cloned = (NetTopologySuite.Geometries.Geometry)geometry.InternalGeometry.Copy();
+            cloned.Apply(filter);
+            cloned.GeometryChanged();
+
+            if (targetSrid != 0)
+            {
+                cloned.SRID = targetSrid;
+            }
+
+            return NtsGeometry.WrapGeometry(cloned);
+        }
+
+        [IsVisibleInDynamoLibrary(false)]
+        internal static NtsFeature TransformFeature(
+            NtsFeature feature,
+            CoordinateTransformationFilter filter,
+            int targetSrid = 0)
+        {
+            if (feature == null) throw new ArgumentNullException(nameof(feature));
+
+            var reprojectedGeometry = TransformGeometry(feature.Geometry, filter, targetSrid);
+            if (reprojectedGeometry == null)
+            {
+                throw new InvalidOperationException("Failed to reproject feature geometry.");
+            }
+
+            var clonedRecord = feature.Record.Clone();
+            var concreteFeature = new Feature(reprojectedGeometry.InternalGeometry, clonedRecord.InternalTable);
+            return new NtsFeature(concreteFeature, reprojectedGeometry, clonedRecord);
         }
 
         #endregion
 
         #region Internal Sequence Filter
 
-        private class CoordinateTransformationFilter : ICoordinateSequenceFilter
+        [IsVisibleInDynamoLibrary(false)]
+        internal class CoordinateTransformationFilter : ICoordinateSequenceFilter
         {
             private readonly MathTransform _mathTransform;
+            private readonly double[] _coordBuffer;
 
             public CoordinateTransformationFilter(MathTransform mathTransform)
             {
                 _mathTransform = mathTransform ?? throw new ArgumentNullException(nameof(mathTransform));
+                _coordBuffer = new double[Math.Max(2, _mathTransform.DimSource)];
             }
 
             public bool Done => false;
@@ -134,13 +226,26 @@ namespace DynamoNTS.Projections
 
             public void Filter(CoordinateSequence seq, int i)
             {
-                double x = seq.GetX(i);
-                double y = seq.GetY(i);
+                _coordBuffer[0] = seq.GetX(i);
+                _coordBuffer[1] = seq.GetY(i);
 
-                double[] transformed = _mathTransform.Transform(new[] { x, y });
+                bool hasZ = seq.HasZ || seq.Dimension >= 3;
+
+                if (_coordBuffer.Length >= 3)
+                {
+                    double z = hasZ ? seq.GetZ(i) : double.NaN;
+                    _coordBuffer[2] = double.IsNaN(z) ? 0.0 : z;
+                }
+
+                double[] transformed = _mathTransform.Transform(_coordBuffer);
 
                 seq.SetX(i, transformed[0]);
                 seq.SetY(i, transformed[1]);
+
+                if (hasZ && transformed.Length >= 3)
+                {
+                    seq.SetZ(i, transformed[2]);
+                }
             }
         }
 
