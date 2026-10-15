@@ -389,7 +389,7 @@ namespace DynamoNTS.Data
 
         #endregion
 
-        [IsVisibleInDynamoLibrary(false)]
+        /// <inheritdoc />
         public override string ToString()
         {
             return $"NtsRecord({Count} Attributes: {string.Join(", ", Keys)})";

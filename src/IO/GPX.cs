@@ -389,7 +389,7 @@ namespace DynamoNTS.IO
 
         /// <summary>
         /// Appends track metadata allowed by GPX 1.1 trkType (name and desc).
-        /// Note: GPX 1.1 trkType does not allow a direct <time> child element.
+        /// Note: GPX 1.1 trkType does not allow a direct time child element.
         /// </summary>
         private static void AppendTrackMetadata(XElement trkElem, NtsFeature feature)
         {

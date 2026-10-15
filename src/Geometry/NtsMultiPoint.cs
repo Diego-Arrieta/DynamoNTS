@@ -40,6 +40,9 @@ namespace DynamoNTS.Geometry
                 .Select(p => p.InternalPoint)
                 .ToArray();
 
+            if (ntsPts.Length == 0)
+                throw new ArgumentException("At least one valid Point is required to create a MultiPoint.");
+
             var factory = NtsGeometries.GeometryFactory.Default;
             return new NtsMultiPoint(factory.CreateMultiPoint(ntsPts));
         }

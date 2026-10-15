@@ -107,6 +107,7 @@ namespace DynamoNTS.Data
 
         #endregion
 
+        /// <inheritdoc />
         public override string ToString()
         {
             return $"NtsSchema({FieldCount} Fields: {string.Join(", ", FieldNames)})";

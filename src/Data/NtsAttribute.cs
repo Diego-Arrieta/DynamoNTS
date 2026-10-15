@@ -130,6 +130,7 @@ namespace DynamoNTS.Data
 
         #endregion
 
+        /// <inheritdoc />
         public override string ToString()
         {
             return $"{Name}: {Value ?? "null"} ({Type})";

@@ -30,7 +30,7 @@ namespace DynamoNTS.IO
 
             var reader = new WKBReader
             {
-                RepairRings = true
+                IsStrict = false
             };
 
             var geom = reader.Read(bytes);
@@ -56,7 +56,7 @@ namespace DynamoNTS.IO
 
             var reader = new WKBReader
             {
-                RepairRings = true
+                IsStrict = false
             };
 
             var geom = reader.Read(bytes);

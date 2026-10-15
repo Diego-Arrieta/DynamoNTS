@@ -174,6 +174,7 @@ namespace DynamoNTS.Data
 
         #endregion
 
+        /// <inheritdoc />
         public override string ToString()
         {
             return $"NtsField({Name}, {Type}, Len={Length})";

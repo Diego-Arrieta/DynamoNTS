@@ -162,7 +162,6 @@ namespace DynamoNTS.IO
                 Directory.CreateDirectory(dir);
             }
 
-            // B11: Advertencia cuando la capa tiene Z, dado que NetTopologySuite.IO.Esri solo exporta geometrías 2D
             if (layer.Is3D)
             {
                 System.Diagnostics.Trace.TraceWarning(
@@ -190,7 +189,6 @@ namespace DynamoNTS.IO
                         string dbfName = fieldNameToDbfName[field.Name];
                         object? val = f.GetValue(field.Name);
 
-                        // B12: Validar y truncar cadenas midiendo BYTES en UTF-8 (máximo 254 bytes en DBF)
                         if (field.Type == NtsFieldType.String && val is string strVal)
                         {
                             int fieldLen = field.Length > 0 ? field.Length : 50;
@@ -214,7 +212,6 @@ namespace DynamoNTS.IO
                 }
             }
 
-            // B13: Escribir archivo .prj priorizando formato WKT ESRI si está disponible
             if (layer.CoordinateSystem?.InternalCRS != null)
             {
                 string prjPath = Path.ChangeExtension(shpPath, ".prj");
@@ -253,7 +250,6 @@ namespace DynamoNTS.IO
 
         private static ShapeType ResolveShapeType(NtsLayer layer)
         {
-            // B11: NetTopologySuite.IO.Esri define exclusivamente los tipos planos 2D
             return layer.GeometryType switch
             {
                 NtsGeometryType.Point => ShapeType.Point,
@@ -310,7 +306,6 @@ namespace DynamoNTS.IO
 
         private static NtsFieldType MapFieldType(DbfField field)
         {
-            // B14: Si el campo numérico no tiene decimales y cabe en 32 bits, mapear a Integer
             if (field is DbfNumericInt32Field)
                 return NtsFieldType.Integer;
 

@@ -3,7 +3,8 @@
     <Platform Name="Any CPU" />
     <Platform Name="x64" />
   </Configurations>
-  <Project Path="DynamoNTS/DynamoNTS.csproj">
+  <Project Path="src/DynamoNTS.csproj">
     <Platform Solution="*|x64" Project="x64" />
   </Project>
+  <Project Path="tests/DynamoNTS.Tests.csproj" Id="a991c6ff-90da-4e1c-bbe5-f5cd24cea88b" />
 </Solution>

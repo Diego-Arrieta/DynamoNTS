@@ -39,7 +39,7 @@ namespace DynamoNTS.Projections
         /// - Global: WGS84 (4326), Web Mercator (3857, 900913), WGS84 UTM zones (32601-32660, 32701-32760).
         /// - Regional: SIRGAS 2000 (4674), SIRGAS 2000 UTM zones 17S-19S (31717-31719, 31977-31979).
         /// - Historical / Local: PSAD56 (4248), PSAD56 UTM zones 17S-19S (24877-24879) with TOWGS84 datum shifts.
-        /// - National & Others: Peru96 (5373), Cape (4222).
+        /// - National and Others: Peru96 (5373), Cape (4222).
         /// </summary>
         /// <param name="epsgCode">The numeric EPSG identifier code.</param>
         /// <returns name="coordinateSystem">The resolved NtsCoordinateSystem instance.</returns>

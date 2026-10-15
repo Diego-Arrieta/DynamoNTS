@@ -679,7 +679,7 @@ namespace DynamoNTS.Data
 
         #endregion
 
-        [IsVisibleInDynamoLibrary(false)]
+        /// <inheritdoc />
         public override string ToString()
         {
             string crsText = CoordinateSystem != null ? (CoordinateSystem.EPSG != 0 ? $"EPSG:{CoordinateSystem.EPSG}" : CoordinateSystem.Name) : "Undefined";

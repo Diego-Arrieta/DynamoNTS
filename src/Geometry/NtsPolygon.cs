@@ -36,6 +36,7 @@ namespace DynamoNTS.Geometry
         /// Creates an NtsPolygon by extracting the exterior boundary of a Dynamo Polygon.
         /// </summary>
         /// <param name="polygon">The base Dynamo Polygon.</param>
+        /// <param name="keepZ">Indicates whether Z coordinates are preserved.</param>
         /// <returns name="polygon">The topological polygon in NTS.</returns>
         public static NtsPolygon ByPolygon(
             DynGeometry.Polygon polygon,

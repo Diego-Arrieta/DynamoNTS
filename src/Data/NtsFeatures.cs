@@ -217,7 +217,7 @@ namespace DynamoNTS.Data
 
         #endregion
 
-        [IsVisibleInDynamoLibrary(false)]
+        /// <inheritdoc />
         public override string ToString()
         {
             string geomType = Geometry?.GeometryType.ToString() ?? "None";
