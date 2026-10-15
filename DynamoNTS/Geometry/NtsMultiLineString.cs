@@ -26,6 +26,11 @@ namespace DynamoNTS.Geometry
 
         #region Create Nodes
 
+        /// <summary>
+        /// Creates an NtsMultiLineString from a collection of individual NtsLineString instances.
+        /// </summary>
+        /// <param name="lineStrings">Collection of topological line strings.</param>
+        /// <returns name="multiLineString">The constructed NtsMultiLineString instance.</returns>
         public static NtsMultiLineString ByLineStrings(IEnumerable<NtsLineString> lineStrings)
         {
             if (lineStrings == null) throw new ArgumentNullException(nameof(lineStrings));
@@ -46,6 +51,10 @@ namespace DynamoNTS.Geometry
 
         #region Action Nodes
 
+        /// <summary>
+        /// Converts the MultiLineString parts into native Dynamo PolyCurves.
+        /// </summary>
+        /// <returns name="polyCurves">List of native Dynamo PolyCurves.</returns>
         public List<DynGeometry.PolyCurve> ToPolyCurves()
         {
             var list = new List<DynGeometry.PolyCurve>();
@@ -60,6 +69,10 @@ namespace DynamoNTS.Geometry
             return list;
         }
 
+        /// <summary>
+        /// Deconstructs the MultiLineString into individual NtsLineString components.
+        /// </summary>
+        /// <returns name="lineStrings">List of individual NtsLineString instances.</returns>
         public List<NtsLineString> Explode()
         {
             var list = new List<NtsLineString>();
@@ -77,7 +90,14 @@ namespace DynamoNTS.Geometry
 
         #region Query Nodes
 
+        /// <summary>
+        /// Gets the total number of LineString elements in this collection.
+        /// </summary>
         public int Count => InternalMultiLineString.NumGeometries;
+
+        /// <summary>
+        /// Gets the combined total length of all LineStrings in this collection.
+        /// </summary>
         public double Length => InternalMultiLineString.Length;
 
         #endregion

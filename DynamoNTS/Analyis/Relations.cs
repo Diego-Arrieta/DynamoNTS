@@ -1,5 +1,4 @@
 ﻿using Autodesk.DesignScript.Runtime;
-using NetTopologySuite.Algorithm;
 using System;
 using System.Collections.Generic;
 using System.Linq;
@@ -10,7 +9,7 @@ namespace DynamoNTS.Analysis
     /// <summary>
     /// Topological relational boolean operators (True/False) powered by NetTopologySuite.
     /// </summary>
-    public static class Topology
+    public static class Relations
     {
         #region Action Nodes
 
@@ -100,4 +99,4 @@ namespace DynamoNTS.Analysis
 
         #endregion
     }
-}
+}       

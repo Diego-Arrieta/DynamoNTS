@@ -2,7 +2,6 @@
 using System;
 using System.Collections.Generic;
 using System.Linq;
-using DynGeometry = Autodesk.DesignScript.Geometry;
 using NtsGeometries = NetTopologySuite.Geometries;
 
 namespace DynamoNTS.Geometry
@@ -62,6 +61,7 @@ namespace DynamoNTS.Geometry
         /// <summary>
         /// Alias indicating whether the geometry is 3D.
         /// </summary>
+        [IsVisibleInDynamoLibrary(false)]
         public bool Is3D => HasZ;
 
         /// <summary>

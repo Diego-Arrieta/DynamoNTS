@@ -1,5 +1,4 @@
 ﻿using Autodesk.DesignScript.Runtime;
-using NetTopologySuite.Algorithm;
 using System;
 using System.Collections.Generic;
 using System.Linq;

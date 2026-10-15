@@ -1,6 +1,5 @@
 ﻿using Autodesk.DesignScript.Runtime;
 using DynamoNTS.Geometry;
-using DynamoNTS.Data;
 using NetTopologySuite.Features;
 using System;
 using System.Collections.Generic;
@@ -137,7 +136,7 @@ namespace DynamoNTS.Data
         /// <summary>
         /// Retrieves an individual atomic NtsAttribute cell by column name or NtsField definition.
         /// </summary>
-        /// <param name="field">Column name (string) or NtsField instance.</param>
+        /// <param name="field">Column name (string) or formal NtsField definition.</param>
         /// <returns name="attribute">The queried NtsAttribute cell.</returns>
         public NtsAttribute? GetAttribute(object field)
         {
@@ -145,14 +144,28 @@ namespace DynamoNTS.Data
         }
 
         /// <summary>
+        /// Retrieves an individual atomic NtsAttribute cell by column name.
+        /// </summary>
+        /// <param name="fieldName">Field column name.</param>
+        /// <returns name="attribute">The queried NtsAttribute cell.</returns>
+        public NtsAttribute? GetAttributeByName(string fieldName) => Record.GetAttribute(fieldName);
+
+        /// <summary>
         /// Gets an attribute value by field name or NtsField definition.
         /// </summary>
-        /// <param name="field">Column name (string) or NtsField instance.</param>
+        /// <param name="field">Column name (string) or formal NtsField definition.</param>
         /// <returns name="value">The attribute value.</returns>
         public object? GetValue(object field)
         {
             return Record.GetValue(field);
         }
+
+        /// <summary>
+        /// Gets an attribute value directly by column name.
+        /// </summary>
+        /// <param name="fieldName">Field column name.</param>
+        /// <returns name="value">The attribute value.</returns>
+        public object? GetValueByName(string fieldName) => Record.GetValue(fieldName);
 
         /// <summary>
         /// Creates a new NtsFeature instance with the specified NtsAttribute cell updated.
@@ -169,7 +182,7 @@ namespace DynamoNTS.Data
         /// <summary>
         /// Creates a new NtsFeature instance with the specified attribute value updated.
         /// </summary>
-        /// <param name="field">Column name (string) or NtsField definition.</param>
+        /// <param name="field">Column name (string) or formal NtsField definition.</param>
         /// <param name="value">The value to assign.</param>
         /// <returns name="feature">A new NtsFeature instance with the update.</returns>
         public NtsFeature WithValue(object field, object? value)
@@ -179,23 +192,13 @@ namespace DynamoNTS.Data
             return new NtsFeature(ntsFeat, Geometry, newRecord);
         }
 
-        #endregion
-
-        #region Indexers
-
         /// <summary>
-        /// Gets an attribute value directly from the feature using square-bracket indexing by column name.
+        /// Creates a new NtsFeature instance with the specified attribute value updated by column name.
         /// </summary>
         /// <param name="fieldName">Field column name.</param>
-        /// <returns>The attribute value, or null if not found.</returns>
-        public object? this[string fieldName] => GetValue(fieldName);
-
-        /// <summary>
-        /// Gets an attribute value directly from the feature using square-bracket indexing by formal NtsField.
-        /// </summary>
-        /// <param name="field">The NtsField definition.</param>
-        /// <returns>The attribute value, or null if not found.</returns>
-        public object? this[NtsField field] => GetValue(field);
+        /// <param name="value">The value to assign.</param>
+        /// <returns name="feature">A new NtsFeature instance with the update.</returns>
+        public NtsFeature WithValueByName(string fieldName, object? value) => WithValue(fieldName, value);
 
         #endregion
 

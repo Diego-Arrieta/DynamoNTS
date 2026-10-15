@@ -29,6 +29,8 @@ namespace DynamoNTS.Geometry
         /// <summary>
         /// Creates an NtsMultiPoint from a collection of individual NtsPoints.
         /// </summary>
+        /// <param name="points">Collection of topological NtsPoint entities.</param>
+        /// <returns name="multiPoint">The constructed NtsMultiPoint collection.</returns>
         public static NtsMultiPoint ByPoints(IEnumerable<NtsPoint> points)
         {
             if (points == null) throw new ArgumentNullException(nameof(points));
@@ -49,6 +51,7 @@ namespace DynamoNTS.Geometry
         /// <summary>
         /// Converts the MultiPoint parts into native Dynamo Points.
         /// </summary>
+        /// <returns name="points">List of native Dynamo Point geometries.</returns>
         public List<DynGeometry.Point> ToPoints()
         {
             var list = new List<DynGeometry.Point>();
@@ -66,6 +69,7 @@ namespace DynamoNTS.Geometry
         /// <summary>
         /// Explodes the MultiPoint into individual NtsPoint instances.
         /// </summary>
+        /// <returns name="points">List of individual NtsPoint components.</returns>
         public List<NtsPoint> Explode()
         {
             var list = new List<NtsPoint>();

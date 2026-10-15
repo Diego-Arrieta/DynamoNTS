@@ -13,7 +13,14 @@ namespace DynamoNTS.Projections
         [IsVisibleInDynamoLibrary(false)]
         internal ProjCS.CoordinateSystem InternalCRS { get; }
 
+        /// <summary>
+        /// Gets the European Petroleum Survey Group (EPSG) numeric identifier code, or 0 if undefined.
+        /// </summary>
         public int EPSG { get; }
+
+        /// <summary>
+        /// Gets the descriptive name of the Coordinate Reference System.
+        /// </summary>
         public string Name => InternalCRS?.Name ?? "Unknown CRS";
 
         [IsVisibleInDynamoLibrary(false)]
@@ -25,6 +32,12 @@ namespace DynamoNTS.Projections
 
         #region Create Nodes
 
+        /// <summary>
+        /// Resolves a Coordinate Reference System using its standardized EPSG authority code.
+        /// Supports WGS84 (4326), Web Mercator (3857), and standard WGS84 UTM zones (32601-32660, 32701-32760).
+        /// </summary>
+        /// <param name="epsgCode">The numeric EPSG identifier code.</param>
+        /// <returns name="coordinateSystem">The resolved NtsCoordinateSystem instance.</returns>
         public static NtsCoordinateSystem ByEPSG(int epsgCode)
         {
             var csFactory = new ProjCS.CoordinateSystemFactory();
@@ -58,6 +71,11 @@ namespace DynamoNTS.Projections
             throw new NotSupportedException($"EPSG code {epsgCode} is not in the built-in catalog.");
         }
 
+        /// <summary>
+        /// Creates a Coordinate Reference System from an OGC Well-Known Text (WKT) projection string.
+        /// </summary>
+        /// <param name="wktString">The Well-Known Text (WKT) coordinate system definition string.</param>
+        /// <returns name="coordinateSystem">The instantiated NtsCoordinateSystem instance.</returns>
         public static NtsCoordinateSystem ByWKT(string wktString)
         {
             if (string.IsNullOrWhiteSpace(wktString))
@@ -69,6 +87,11 @@ namespace DynamoNTS.Projections
             return new NtsCoordinateSystem(crs);
         }
 
+        /// <summary>
+        /// Reads and initializes a Coordinate Reference System from an ESRI projection file (.prj).
+        /// </summary>
+        /// <param name="prjFilePath">Absolute file path to the .prj file.</param>
+        /// <returns name="coordinateSystem">The instantiated NtsCoordinateSystem instance.</returns>
         public static NtsCoordinateSystem ByPrjFile(string prjFilePath)
         {
             if (string.IsNullOrWhiteSpace(prjFilePath))
@@ -80,6 +103,12 @@ namespace DynamoNTS.Projections
             return ByWKT(File.ReadAllText(prjFilePath));
         }
 
+        /// <summary>
+        /// Creates a WGS 84 Universal Transverse Mercator (UTM) projected coordinate system by zone and hemisphere.
+        /// </summary>
+        /// <param name="zone">UTM zone number (1 to 60).</param>
+        /// <param name="isNorth">True for Northern hemisphere (N), false for Southern hemisphere (S).</param>
+        /// <returns name="coordinateSystem">The resulting UTM projected Coordinate Reference System.</returns>
         public static NtsCoordinateSystem WGS84_UTM(int zone, bool isNorth)
         {
             if (zone < 1 || zone > 60)
@@ -89,7 +118,14 @@ namespace DynamoNTS.Projections
             return ByEPSG(epsg);
         }
 
+        /// <summary>
+        /// Gets the standard WGS 84 Geographic Coordinate System (EPSG:4326).
+        /// </summary>
         public static NtsCoordinateSystem WGS84 => ByEPSG(4326);
+
+        /// <summary>
+        /// Gets the standard WGS 84 / Pseudo-Mercator projection (EPSG:3857).
+        /// </summary>
         public static NtsCoordinateSystem WebMercator => ByEPSG(3857);
 
         #endregion

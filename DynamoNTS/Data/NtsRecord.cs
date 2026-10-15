@@ -1,5 +1,4 @@
 ﻿using Autodesk.DesignScript.Runtime;
-using DynamoNTS.Data;
 using NetTopologySuite.Features;
 using System;
 using System.Collections.Generic;
@@ -193,7 +192,7 @@ namespace DynamoNTS.Data
         }
 
         #endregion
-
+        
         #region Action / Query Nodes
 
         /// <summary>
@@ -212,9 +211,9 @@ namespace DynamoNTS.Data
         }
 
         /// <summary>
-        /// Retrieves an individual atomic NtsAttribute cell by field name or NtsField definition.
+        /// Retrieves an individual atomic NtsAttribute cell by column name or NtsField definition.
         /// </summary>
-        /// <param name="field">Column name (string) or NtsField definition.</param>
+        /// <param name="field">Column name (string) or formal NtsField definition.</param>
         /// <returns name="attribute">The corresponding NtsAttribute cell, or null if not found.</returns>
         public NtsAttribute? GetAttribute(object field)
         {
@@ -230,6 +229,38 @@ namespace DynamoNTS.Data
 
             return new NtsAttribute(f, val is DBNull ? null : val);
         }
+
+        /// <summary>
+        /// Retrieves an individual atomic NtsAttribute cell by column name.
+        /// </summary>
+        /// <param name="fieldName">Field column name.</param>
+        /// <returns name="attribute">The corresponding NtsAttribute cell, or null if not found.</returns>
+        public NtsAttribute? GetAttributeByName(string fieldName) => GetAttribute(fieldName);
+
+        /// <summary>
+        /// Gets the raw attribute value by column name or NtsField definition using canonical key resolution.
+        /// </summary>
+        /// <param name="field">Column name (string) or formal NtsField definition.</param>
+        /// <returns name="value">The attribute value, or null if not set.</returns>
+        public object? GetValue(object field)
+        {
+            string? rawName = ExtractFieldName(field);
+            if (string.IsNullOrWhiteSpace(rawName)) return null;
+
+            string canonicalKey = ResolveKey(rawName);
+            string? tableKey = FindTableKey(canonicalKey);
+            if (tableKey == null) return null;
+
+            var val = InternalTable[tableKey];
+            return val is DBNull ? null : val;
+        }
+
+        /// <summary>
+        /// Gets an attribute value directly by column name.
+        /// </summary>
+        /// <param name="fieldName">Field column name.</param>
+        /// <returns name="value">The attribute value, or null if not set.</returns>
+        public object? GetValueByName(string fieldName) => GetValue(fieldName);
 
         /// <summary>
         /// Creates a new NtsRecord instance with the specified attribute added or updated.
@@ -268,27 +299,9 @@ namespace DynamoNTS.Data
         }
 
         /// <summary>
-        /// Gets the raw attribute value by column name or NtsField definition using canonical key resolution.
-        /// </summary>
-        /// <param name="field">Column name (string) or NtsField definition.</param>
-        /// <returns name="value">The attribute value, or null if not set.</returns>
-        public object? GetValue(object field)
-        {
-            string? rawName = ExtractFieldName(field);
-            if (string.IsNullOrWhiteSpace(rawName)) return null;
-
-            string canonicalKey = ResolveKey(rawName);
-            string? tableKey = FindTableKey(canonicalKey);
-            if (tableKey == null) return null;
-
-            var val = InternalTable[tableKey];
-            return val is DBNull ? null : val;
-        }
-
-        /// <summary>
         /// Creates a new NtsRecord instance with the specified attribute value added or updated.
         /// </summary>
-        /// <param name="field">Column name (string) or NtsField definition.</param>
+        /// <param name="field">Column name (string) or formal NtsField definition.</param>
         /// <param name="value">The value to set.</param>
         /// <returns name="record">A new NtsRecord instance with the update.</returns>
         public NtsRecord WithValue(object field, object? value)
@@ -332,18 +345,12 @@ namespace DynamoNTS.Data
         }
 
         /// <summary>
-        /// Converts the record into a native Dynamo dictionary with case-insensitive key comparison.
+        /// Creates a new NtsRecord instance with the specified attribute value updated by column name.
         /// </summary>
-        /// <returns name="dictionary">A Dynamo dictionary.</returns>
-        public Dictionary<string, object?> ToDictionary()
-        {
-            var dict = new Dictionary<string, object?>(StringComparer.OrdinalIgnoreCase);
-            foreach (var field in Schema.Fields)
-            {
-                dict[field.Name] = GetValue(field.Name);
-            }
-            return dict;
-        }
+        /// <param name="fieldName">Field column name.</param>
+        /// <param name="value">The value to set.</param>
+        /// <returns name="record">A new NtsRecord instance with the update.</returns>
+        public NtsRecord WithValueByName(string fieldName, object? value) => WithValue(fieldName, value);
 
         #endregion
 
@@ -366,14 +373,6 @@ namespace DynamoNTS.Data
             return new NtsRecord(newTable, Schema);
         }
 
-        #endregion
-
-        #region Indexers        
-
-        public object? this[string fieldName] => GetValue(fieldName);
-
-        public object? this[NtsField field] => GetValue(field);
-        
         #endregion
 
         [IsVisibleInDynamoLibrary(false)]
