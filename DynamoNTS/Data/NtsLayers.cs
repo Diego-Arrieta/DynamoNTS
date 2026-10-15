@@ -6,6 +6,7 @@ using NetTopologySuite.Features;
 using NetTopologySuite.Index.Strtree;
 using System;
 using System.Collections.Generic;
+using System.Globalization;
 using System.Linq;
 
 namespace DynamoNTS.Data
@@ -23,6 +24,9 @@ namespace DynamoNTS.Data
 
         [IsVisibleInDynamoLibrary(false)]
         private readonly IReadOnlyList<NtsFeature> _features;
+
+        [IsVisibleInDynamoLibrary(false)]
+        private readonly Lazy<bool> _is3D;
 
         /// <summary>
         /// Acceso interno directo de solo lectura para métodos internos de DynamoNTS.
@@ -58,7 +62,7 @@ namespace DynamoNTS.Data
 
         public bool IsHomogeneous => GeometryType != NtsGeometryType.Mixed && GeometryType != NtsGeometryType.None;
 
-        public bool Is3D { get; }
+        public bool Is3D => _is3D.Value;
 
         public int CoordinateDimension => Is3D ? 3 : 2;
 
@@ -111,6 +115,7 @@ namespace DynamoNTS.Data
             Name = string.IsNullOrWhiteSpace(name) ? "Layer" : name;
             Schema = schema ?? NtsSchema.Empty();
             CoordinateSystem = crs;
+            CrsSource = crsSource;
 
             _features = features?.Where(f => f != null).ToList() ?? new List<NtsFeature>();
 
@@ -121,7 +126,8 @@ namespace DynamoNTS.Data
             }
 
             GeometryType = DetectGeometryType(_features);
-            Is3D = _features.Any(f => f?.Geometry != null && f.Geometry.HasZ);
+
+            _is3D = new Lazy<bool>(() => _features.Any(f => f?.Geometry != null && f.Geometry.HasZ));
 
             _spatialIndex = new Lazy<STRtree<NtsFeature>>(() => BuildSpatialIndex(_features));
         }
@@ -399,24 +405,34 @@ namespace DynamoNTS.Data
 
         /// <summary>
         /// Filters layer features by checking equality against an attribute field value.
+        /// Utiliza comparación tipada, tolerancia numérica y cultura invariante.
         /// </summary>
-        /// <param name="fieldName">Field column name.</param>
-        /// <param name="value">Target value to match.</param>
-        /// <returns name="filteredLayer">A new NtsLayer containing only matching features.</returns>
         public NtsLayer FilterByAttribute(string fieldName, object? value)
         {
             if (string.IsNullOrWhiteSpace(fieldName))
                 throw new ArgumentException("Field name cannot be null or empty.", nameof(fieldName));
 
-            var matched = Features.Where(f =>
+            var field = Schema.FieldByName(fieldName);
+            object? targetValue = value;
+            if (field != null && value != null)
             {
-                var val = f.GetValue(fieldName);
-                if (val == null && value == null) return true;
-                if (val == null || value == null) return false;
-                return val.ToString()!.Equals(value.ToString(), StringComparison.OrdinalIgnoreCase);
-            })
-            .Select(f => f.Clone()) // Clona cada feature resultante
-            .ToList();
+                try
+                {
+                    targetValue = NtsAttribute.CoerceValue(value, field);
+                }
+                catch
+                {
+                    targetValue = value;
+                }
+            }
+
+            var matched = _features.Where(f =>
+                {
+                    var val = f.GetValue(fieldName);
+                    return AreValuesEqual(val, targetValue);
+                })
+                .Select(f => f.Clone())
+                .ToList();
 
             return new NtsLayer($"{Name}_Filtered", Schema, matched, CoordinateSystem);
         }
@@ -606,6 +622,59 @@ namespace DynamoNTS.Data
             }
 
             return NtsSchema.ByFields(inferredFields);
+        }
+
+        #endregion
+
+        #region Value Comparison Helpers
+
+        private static bool AreValuesEqual(object? a, object? b)
+        {
+            if (a == null && b == null) return true;
+            if (a == null || b == null) return false;
+
+            if (IsNumeric(a) && IsNumeric(b))
+            {
+                try
+                {
+                    double numA = Convert.ToDouble(a, CultureInfo.InvariantCulture);
+                    double numB = Convert.ToDouble(b, CultureInfo.InvariantCulture);
+                    return Math.Abs(numA - numB) < 1e-9;
+                }
+                catch
+                {
+                    // En caso de desbordamiento extremo
+                }
+            }
+
+            if (a is DateTime dtA && b is DateTime dtB)
+            {
+                return dtA == dtB;
+            }
+
+            if (a is bool boolA && b is bool boolB)
+            {
+                return boolA == boolB;
+            }
+
+            if (a.GetType() == b.GetType() && a is IComparable comp)
+            {
+                return comp.CompareTo(b) == 0;
+            }
+
+            string sa = Convert.ToString(a, CultureInfo.InvariantCulture) ?? string.Empty;
+            string sb = Convert.ToString(b, CultureInfo.InvariantCulture) ?? string.Empty;
+
+            return string.Equals(sa, sb, StringComparison.OrdinalIgnoreCase);
+        }
+
+        private static bool IsNumeric(object value)
+        {
+            return value is byte or sbyte
+                or short or ushort
+                or int or uint
+                or long or ulong
+                or float or double or decimal;
         }
 
         #endregion
