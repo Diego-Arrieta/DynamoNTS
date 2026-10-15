@@ -59,6 +59,7 @@ namespace DynamoNTS.Data
 
         /// <summary>
         /// Creates an NtsFeature combining a topological geometry with an existing NtsRecord.
+        /// The record is cloned upon construction to avoid shared-state references across lacing executions.
         /// </summary>
         /// <param name="geometry">The topological geometry.</param>
         /// <param name="record">The attribute record.</param>
@@ -67,7 +68,7 @@ namespace DynamoNTS.Data
         {
             if (geometry == null) throw new ArgumentNullException(nameof(geometry));
 
-            var rec = record ?? NtsRecord.Empty();
+            var rec = record != null ? record.Clone() : NtsRecord.Empty();
             var ntsFeat = new Feature(geometry.InternalGeometry, rec.InternalTable);
 
             return new NtsFeature(ntsFeat, geometry, rec);
@@ -144,17 +145,6 @@ namespace DynamoNTS.Data
         }
 
         /// <summary>
-        /// Sets or updates an individual atomic NtsAttribute cell in this feature.
-        /// </summary>
-        /// <param name="attribute">The NtsAttribute cell to set.</param>
-        /// <returns name="feature">The updated NtsFeature instance.</returns>
-        public NtsFeature SetAttribute(NtsAttribute attribute)
-        {
-            Record.SetAttribute(attribute);
-            return this;
-        }
-
-        /// <summary>
         /// Gets an attribute value by field name or NtsField definition.
         /// </summary>
         /// <param name="field">Column name (string) or NtsField instance.</param>
@@ -165,15 +155,28 @@ namespace DynamoNTS.Data
         }
 
         /// <summary>
-        /// Sets or updates an attribute value by field name or NtsField definition.
+        /// Creates a new NtsFeature instance with the specified NtsAttribute cell updated.
         /// </summary>
-        /// <param name="field">Column name (string) or NtsField instance.</param>
-        /// <param name="value">The value to assign.</param>
-        /// <returns name="feature">The updated NtsFeature instance.</returns>
-        public NtsFeature SetValue(object field, object? value)
+        /// <param name="attribute">The NtsAttribute cell to set.</param>
+        /// <returns name="feature">A new NtsFeature instance with the update.</returns>
+        public NtsFeature WithAttribute(NtsAttribute attribute)
         {
-            Record.SetValue(field, value);
-            return this;
+            var newRecord = Record.WithAttribute(attribute);
+            var ntsFeat = new Feature(Geometry.InternalGeometry, newRecord.InternalTable);
+            return new NtsFeature(ntsFeat, Geometry, newRecord);
+        }
+
+        /// <summary>
+        /// Creates a new NtsFeature instance with the specified attribute value updated.
+        /// </summary>
+        /// <param name="field">Column name (string) or NtsField definition.</param>
+        /// <param name="value">The value to assign.</param>
+        /// <returns name="feature">A new NtsFeature instance with the update.</returns>
+        public NtsFeature WithValue(object field, object? value)
+        {
+            var newRecord = Record.WithValue(field, value);
+            var ntsFeat = new Feature(Geometry.InternalGeometry, newRecord.InternalTable);
+            return new NtsFeature(ntsFeat, Geometry, newRecord);
         }
 
         #endregion
@@ -181,26 +184,32 @@ namespace DynamoNTS.Data
         #region Indexers
 
         /// <summary>
-        /// Gets or sets an attribute value directly on the feature using square-bracket indexing by column name.
-        /// Example: feature["COTA_FONDO"] = 24.85;
+        /// Gets an attribute value directly from the feature using square-bracket indexing by column name.
         /// </summary>
         /// <param name="fieldName">Field column name.</param>
         /// <returns>The attribute value, or null if not found.</returns>
-        public object? this[string fieldName]
-        {
-            get => GetValue(fieldName);
-            set => SetValue(fieldName, value);
-        }
+        public object? this[string fieldName] => GetValue(fieldName);
 
         /// <summary>
-        /// Gets or sets an attribute value directly on the feature using square-bracket indexing by formal NtsField.
+        /// Gets an attribute value directly from the feature using square-bracket indexing by formal NtsField.
         /// </summary>
         /// <param name="field">The NtsField definition.</param>
         /// <returns>The attribute value, or null if not found.</returns>
-        public object? this[NtsField field]
+        public object? this[NtsField field] => GetValue(field);
+
+        #endregion
+
+        #region Helpers
+
+        /// <summary>
+        /// Clona la feature desacoplando su tabla de atributos subyacente.
+        /// </summary>
+        [IsVisibleInDynamoLibrary(false)]
+        internal NtsFeature Clone()
         {
-            get => GetValue(field);
-            set => SetValue(field, value);
+            var clonedRecord = Record.Clone();
+            var concreteFeature = new Feature(Geometry.InternalGeometry, clonedRecord.InternalTable);
+            return new NtsFeature(concreteFeature, Geometry, clonedRecord);
         }
 
         #endregion

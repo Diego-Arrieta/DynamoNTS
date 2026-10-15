@@ -21,6 +21,16 @@ namespace DynamoNTS.Data
         [IsVisibleInDynamoLibrary(false)]
         private readonly Lazy<STRtree<NtsFeature>> _spatialIndex;
 
+        // 1. Campo privado inmutable (aquí vive la lista interna)
+        [IsVisibleInDynamoLibrary(false)]
+        private readonly IReadOnlyList<NtsFeature> _features;
+
+        /// <summary>
+        /// Acceso interno directo de solo lectura para métodos internos de DynamoNTS.
+        /// </summary>
+        [IsVisibleInDynamoLibrary(false)]
+        internal IReadOnlyList<NtsFeature> InternalFeatures => _features;
+
         /// <summary>
         /// Gets the layer identifier name.
         /// </summary>
@@ -41,26 +51,17 @@ namespace DynamoNTS.Data
         /// </summary>
         public NtsGeometryType GeometryType { get; }
 
-        /// <summary>
-        /// Indicates whether all features in this layer share the same geometry type.
-        /// Essential for validating export compatibility with formats like ESRI Shapefile.
-        /// </summary>
         public bool IsHomogeneous => GeometryType != NtsGeometryType.Mixed && GeometryType != NtsGeometryType.None;
 
-        /// <summary>
-        /// Indicates whether the layer contains valid 3D elevation coordinates (Z).
-        /// </summary>
         public bool Is3D { get; }
 
-        /// <summary>
-        /// Gets the coordinate dimension: 3 for 3D coordinates (XYZ), otherwise 2 (XY).
-        /// </summary>
         public int CoordinateDimension => Is3D ? 3 : 2;
 
+        // 2. Propiedad pública que Dynamo expone (retorna la copia defensiva)
         /// <summary>
-        /// Gets the list of spatial features contained in this layer.
+        /// Gets a defensive copy of the spatial features contained in this layer.
         /// </summary>
-        public List<NtsFeature> Features { get; }
+        public List<NtsFeature> Features => new List<NtsFeature>(_features);
 
         /// <summary>
         /// Gets all topological geometries extracted from the features in this layer.
@@ -105,18 +106,19 @@ namespace DynamoNTS.Data
             Name = string.IsNullOrWhiteSpace(name) ? "Layer" : name;
             Schema = schema ?? NtsSchema.Empty();
             CoordinateSystem = crs;
-            Features = features?.Where(f => f != null).ToList() ?? new List<NtsFeature>();
+
+            _features = features?.Where(f => f != null).ToList() ?? new List<NtsFeature>();
 
             InternalCollection = new FeatureCollection();
-            foreach (var feature in Features)
+            foreach (var feature in _features)
             {
                 InternalCollection.Add(feature.InternalFeature);
             }
 
-            GeometryType = DetectGeometryType(Features);
-            Is3D = Features.Any(f => f?.Geometry != null && f.Geometry.HasZ);
+            GeometryType = DetectGeometryType(_features);
+            Is3D = _features.Any(f => f?.Geometry != null && f.Geometry.HasZ);
 
-            _spatialIndex = new Lazy<STRtree<NtsFeature>>(() => BuildSpatialIndex(Features));
+            _spatialIndex = new Lazy<STRtree<NtsFeature>>(() => BuildSpatialIndex(_features));
         }
 
         #region Create Nodes
@@ -189,8 +191,7 @@ namespace DynamoNTS.Data
                 var geom = geometries[i];
                 if (geom == null) continue;
 
-                var feat = NtsFeature.Create(geom, schema);
-                feat.SetValue(fidField, i + 1);
+                var feat = NtsFeature.Create(geom, schema).WithValue(fidField, i + 1);
                 featureList.Add(feat);
             }
 
@@ -257,6 +258,7 @@ namespace DynamoNTS.Data
         {
             var matched = Features
                 .Where(f => f?.Geometry != null && f.Geometry.GeometryType == targetType)
+                .Select(f => f.Clone()) // Clona cada feature resultante
                 .ToList();
 
             return new NtsLayer($"{Name}_{targetType}", Schema, matched, CoordinateSystem);
@@ -277,8 +279,10 @@ namespace DynamoNTS.Data
                 var flatGeom = feat.Geometry.Force2D();
                 if (flatGeom == null) continue;
 
-                var concreteFeature = new Feature(flatGeom.InternalGeometry, feat.Record.InternalTable);
-                flatFeatures.Add(new NtsFeature(concreteFeature, flatGeom, feat.Record));
+                // Se clona el record para no compartir la tabla con la capa 3D original
+                var clonedRecord = feat.Record.Clone();
+                var concreteFeature = new Feature(flatGeom.InternalGeometry, clonedRecord.InternalTable);
+                flatFeatures.Add(new NtsFeature(concreteFeature, flatGeom, clonedRecord));
             }
 
             return new NtsLayer($"{Name}_2D", Schema, flatFeatures, CoordinateSystem);
@@ -330,7 +334,9 @@ namespace DynamoNTS.Data
         public NtsLayer SetCoordinateSystem(NtsCoordinateSystem ntsCoordinateSystem)
         {
             if (ntsCoordinateSystem == null) throw new ArgumentNullException(nameof(ntsCoordinateSystem));
-            return new NtsLayer(Name, Schema, Features, ntsCoordinateSystem);
+
+            var clonedFeatures = Features.Select(f => f.Clone()).ToList();
+            return new NtsLayer(Name, Schema, clonedFeatures, ntsCoordinateSystem);
         }
 
         /// <summary>
@@ -392,7 +398,9 @@ namespace DynamoNTS.Data
                 if (val == null && value == null) return true;
                 if (val == null || value == null) return false;
                 return val.ToString()!.Equals(value.ToString(), StringComparison.OrdinalIgnoreCase);
-            }).ToList();
+            })
+            .Select(f => f.Clone()) // Clona cada feature resultante
+            .ToList();
 
             return new NtsLayer($"{Name}_Filtered", Schema, matched, CoordinateSystem);
         }

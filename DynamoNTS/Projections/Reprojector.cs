@@ -79,8 +79,10 @@ namespace DynamoNTS.Projections
                 throw new InvalidOperationException("Failed to reproject feature geometry.");
             }
 
-            var concreteFeature = new Feature(reprojectedGeometry.InternalGeometry, feature.Record.InternalTable);
-            return new NtsFeature(concreteFeature, reprojectedGeometry, feature.Record);
+            // Desacoplamos la tabla de atributos clonando el record
+            var clonedRecord = feature.Record.Clone();
+            var concreteFeature = new Feature(reprojectedGeometry.InternalGeometry, clonedRecord.InternalTable);
+            return new NtsFeature(concreteFeature, reprojectedGeometry, clonedRecord);
         }
 
         /// <summary>

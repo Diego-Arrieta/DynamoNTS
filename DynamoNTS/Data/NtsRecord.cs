@@ -18,7 +18,7 @@ namespace DynamoNTS.Data
         /// <summary>
         /// The formal attribute schema governing this record.
         /// </summary>
-        public NtsSchema Schema { get; private set; }
+        public NtsSchema Schema { get; }
 
         /// <summary>
         /// List of all column names registered in this record.
@@ -232,33 +232,39 @@ namespace DynamoNTS.Data
         }
 
         /// <summary>
-        /// Inserts or updates an individual atomic NtsAttribute cell in this record using canonical key resolution.
+        /// Creates a new NtsRecord instance with the specified attribute added or updated.
         /// </summary>
         /// <param name="attribute">The attribute cell to set.</param>
-        /// <returns name="record">The updated NtsRecord.</returns>
-        public NtsRecord SetAttribute(NtsAttribute attribute)
+        /// <returns name="record">A new NtsRecord instance with the update.</returns>
+        public NtsRecord WithAttribute(NtsAttribute attribute)
         {
             if (attribute == null) throw new ArgumentNullException(nameof(attribute));
 
-            string canonicalKey = ResolveKey(attribute.Name);
+            var newTable = new AttributesTable();
+            foreach (var key in InternalTable.GetNames())
+            {
+                newTable.Add(key, InternalTable[key]);
+            }
 
+            string canonicalKey = ResolveKey(attribute.Name);
             string? existingTableKey = FindTableKey(canonicalKey);
             if (existingTableKey != null && !string.Equals(existingTableKey, canonicalKey, StringComparison.Ordinal))
             {
-                InternalTable.DeleteAttribute(existingTableKey);
+                newTable.DeleteAttribute(existingTableKey);
             }
 
-            if (InternalTable.Exists(canonicalKey))
-                InternalTable[canonicalKey] = attribute.Value;
+            if (newTable.Exists(canonicalKey))
+                newTable[canonicalKey] = attribute.Value;
             else
-                InternalTable.Add(canonicalKey, attribute.Value);
+                newTable.Add(canonicalKey, attribute.Value);
 
-            if (Schema.FieldByName(canonicalKey) == null)
+            var newSchema = Schema;
+            if (newSchema.FieldByName(canonicalKey) == null)
             {
-                Schema = Schema.AddField(attribute.Field);
+                newSchema = newSchema.AddField(attribute.Field);
             }
 
-            return this;
+            return new NtsRecord(newTable, newSchema);
         }
 
         /// <summary>
@@ -280,12 +286,12 @@ namespace DynamoNTS.Data
         }
 
         /// <summary>
-        /// Sets or updates a raw attribute value by column name or NtsField definition using canonical key resolution.
+        /// Creates a new NtsRecord instance with the specified attribute value added or updated.
         /// </summary>
         /// <param name="field">Column name (string) or NtsField definition.</param>
         /// <param name="value">The value to set.</param>
-        /// <returns name="record">The updated NtsRecord.</returns>
-        public NtsRecord SetValue(object field, object? value)
+        /// <returns name="record">A new NtsRecord instance with the update.</returns>
+        public NtsRecord WithValue(object field, object? value)
         {
             string? rawName = ExtractFieldName(field);
             if (string.IsNullOrWhiteSpace(rawName))
@@ -299,24 +305,30 @@ namespace DynamoNTS.Data
 
             object? coerced = NtsAttribute.CoerceValue(value, schemaField);
 
+            var newTable = new AttributesTable();
+            foreach (var key in InternalTable.GetNames())
+            {
+                newTable.Add(key, InternalTable[key]);
+            }
+
             string? existingTableKey = FindTableKey(canonicalKey);
             if (existingTableKey != null && !string.Equals(existingTableKey, canonicalKey, StringComparison.Ordinal))
             {
-                InternalTable.DeleteAttribute(existingTableKey);
+                newTable.DeleteAttribute(existingTableKey);
             }
 
-            // Safe set / add
-            if (InternalTable.Exists(canonicalKey))
-                InternalTable[canonicalKey] = coerced;
+            if (newTable.Exists(canonicalKey))
+                newTable[canonicalKey] = coerced;
             else
-                InternalTable.Add(canonicalKey, coerced);
+                newTable.Add(canonicalKey, coerced);
 
-            if (Schema.FieldByName(canonicalKey) == null)
+            var newSchema = Schema;
+            if (newSchema.FieldByName(canonicalKey) == null)
             {
-                Schema = Schema.AddField(schemaField);
+                newSchema = newSchema.AddField(schemaField);
             }
 
-            return this;
+            return new NtsRecord(newTable, newSchema);
         }
 
         /// <summary>
@@ -343,23 +355,25 @@ namespace DynamoNTS.Data
             if (field is NtsField f) return f.Name;
             return null;
         }
+        internal NtsRecord Clone()
+        {
+            var newTable = new AttributesTable();
+            foreach (var key in InternalTable.GetNames())
+            {
+                newTable.Add(key, InternalTable[key]);
+            }
+
+            return new NtsRecord(newTable, Schema);
+        }
 
         #endregion
 
-        #region Indexers
+        #region Indexers        
 
-        public object? this[string fieldName]
-        {
-            get => GetValue(fieldName);
-            set => SetValue(fieldName, value);
-        }
+        public object? this[string fieldName] => GetValue(fieldName);
 
-        public object? this[NtsField field]
-        {
-            get => GetValue(field);
-            set => SetValue(field, value);
-        }
-
+        public object? this[NtsField field] => GetValue(field);
+        
         #endregion
 
         [IsVisibleInDynamoLibrary(false)]
