@@ -5,6 +5,7 @@ using DynamoNTS.Projections;
 using NetTopologySuite.Geometries;
 using System;
 using System.Collections.Generic;
+using System.Diagnostics;
 using System.Globalization;
 using System.IO;
 using System.Linq;
@@ -24,6 +25,7 @@ namespace DynamoNTS.IO
 
         /// <summary>
         /// Reads a GPX file from disk and reconstructs Waypoints, Routes, and Tracks into an NtsLayer.
+        /// Preserves per-vertex timestamps from track and route points into the 'Timestamps' attribute.
         /// </summary>
         /// <param name="filePath">Path to the .gpx file.</param>
         /// <param name="targetCrs">Optional target Coordinate Reference System to reproject the data into.</param>
@@ -76,20 +78,47 @@ namespace DynamoNTS.IO
             var routes = doc.Descendants().Where(e => e.Name.LocalName == "rte");
             foreach (var rte in routes)
             {
-                var coords = rte.Elements()
-                    .Where(e => e.Name.LocalName == "rtept")
-                    .Select(ParsePointCoordinate)
-                    .Where(c => c != null)
-                    .Select(c => c!)
-                    .ToArray();
+                var ptElements = rte.Elements().Where(e => e.Name.LocalName == "rtept").ToList();
+                var coords = new List<Coordinate>();
+                var timestamps = new List<string>();
+                DateTime? firstPtTime = null;
 
-                if (coords.Length < 2) continue;
+                foreach (var ptElem in ptElements)
+                {
+                    var coord = ParsePointCoordinate(ptElem);
+                    if (coord == null) continue;
+                    coords.Add(coord);
 
-                var lineGeom = NtsGeometry.WrapGeometry(geomFactory.CreateLineString(coords));
+                    var timeElem = ptElem.Elements().FirstOrDefault(e => e.Name.LocalName == "time");
+                    string timeVal = timeElem?.Value ?? string.Empty;
+                    timestamps.Add(timeVal);
+
+                    if (!firstPtTime.HasValue && !string.IsNullOrWhiteSpace(timeVal))
+                    {
+                        if (DateTime.TryParse(timeVal, CultureInfo.InvariantCulture, DateTimeStyles.AdjustToUniversal, out var dt))
+                        {
+                            firstPtTime = dt;
+                        }
+                    }
+                }
+
+                if (coords.Count < 2) continue;
+
+                var lineGeom = NtsGeometry.WrapGeometry(geomFactory.CreateLineString(coords.ToArray()));
                 if (lineGeom == null) continue;
 
                 var rawAttrs = ExtractStandardAttributes(rte);
                 rawAttrs["Type"] = "Route";
+
+                if (timestamps.Any(t => !string.IsNullOrEmpty(t)))
+                {
+                    rawAttrs["Timestamps"] = string.Join(";", timestamps);
+                }
+
+                if (!rawAttrs.ContainsKey("Time") && firstPtTime.HasValue)
+                {
+                    rawAttrs["Time"] = firstPtTime.Value;
+                }
 
                 TrackFieldNames(rawAttrs);
                 var record = NtsRecord.FromDictionary(rawAttrs);
@@ -105,21 +134,48 @@ namespace DynamoNTS.IO
                 var segments = trk.Elements().Where(e => e.Name.LocalName == "trkseg");
                 foreach (var seg in segments)
                 {
-                    var coords = seg.Elements()
-                        .Where(e => e.Name.LocalName == "trkpt")
-                        .Select(ParsePointCoordinate)
-                        .Where(c => c != null)
-                        .Select(c => c!)
-                        .ToArray();
+                    var ptElements = seg.Elements().Where(e => e.Name.LocalName == "trkpt").ToList();
+                    var coords = new List<Coordinate>();
+                    var timestamps = new List<string>();
+                    DateTime? firstPtTime = null;
 
-                    if (coords.Length < 2) continue;
+                    foreach (var ptElem in ptElements)
+                    {
+                        var coord = ParsePointCoordinate(ptElem);
+                        if (coord == null) continue;
+                        coords.Add(coord);
 
-                    var lineGeom = NtsGeometry.WrapGeometry(geomFactory.CreateLineString(coords));
+                        var timeElem = ptElem.Elements().FirstOrDefault(e => e.Name.LocalName == "time");
+                        string timeVal = timeElem?.Value ?? string.Empty;
+                        timestamps.Add(timeVal);
+
+                        if (!firstPtTime.HasValue && !string.IsNullOrWhiteSpace(timeVal))
+                        {
+                            if (DateTime.TryParse(timeVal, CultureInfo.InvariantCulture, DateTimeStyles.AdjustToUniversal, out var dt))
+                            {
+                                firstPtTime = dt;
+                            }
+                        }
+                    }
+
+                    if (coords.Count < 2) continue;
+
+                    var lineGeom = NtsGeometry.WrapGeometry(geomFactory.CreateLineString(coords.ToArray()));
                     if (lineGeom == null) continue;
 
                     var rawAttrs = new Dictionary<string, object?>(trackAttrs, StringComparer.OrdinalIgnoreCase);
-                    TrackFieldNames(rawAttrs);
 
+                    if (timestamps.Any(t => !string.IsNullOrEmpty(t)))
+                    {
+                        rawAttrs["Timestamps"] = string.Join(";", timestamps);
+                    }
+
+                    if (!rawAttrs.ContainsKey("Time") && firstPtTime.HasValue)
+                    {
+                        rawAttrs["Time"] = firstPtTime.Value;
+                    }
+
+                    TrackFieldNames(rawAttrs);
                     var record = NtsRecord.FromDictionary(rawAttrs);
                     features.Add(NtsFeature.ByRecord(lineGeom, record));
                 }
@@ -153,13 +209,11 @@ namespace DynamoNTS.IO
         /// <summary>
         /// Writes an NtsLayer to disk as a GPX 1.1 file.
         /// Reprojects to WGS84 if a different CRS is defined, or validates geographic coordinate bounds if CRS is undefined.
+        /// Adheres strictly to GPX 1.1 schema sequence and warns if polygon interior holes are omitted.
         /// </summary>
         /// <param name="layer">The NtsLayer to export.</param>
         /// <param name="filePath">Target destination path (.gpx).</param>
         /// <returns name="success">True if export succeeded.</returns>
-        /// <exception cref="ArgumentNullException">Thrown when layer is null.</exception>
-        /// <exception cref="ArgumentException">Thrown when filePath is null or whitespace.</exception>
-        /// <exception cref="InvalidOperationException">Thrown when the layer is empty or coordinates fall outside WGS84 bounds.</exception>
         public static bool Write(NtsLayer layer, string filePath)
         {
             if (layer == null) throw new ArgumentNullException(nameof(layer));
@@ -188,7 +242,6 @@ namespace DynamoNTS.IO
                 ValidateGeographicBounds(layer, "GPX");
             }
 
-            // Root metadata with geographical extents (<bounds>)
             var metadataElem = new XElement(GpxNs + "metadata",
                 new XElement(GpxNs + "name", exportLayer.Name));
 
@@ -211,7 +264,7 @@ namespace DynamoNTS.IO
             {
                 if (feature?.Geometry == null) continue;
 
-                // 1. Points & MultiPoints -> <wpt>
+
                 if (feature.Geometry is NtsPoint pt)
                 {
                     AddWaypoint(gpxRoot, pt.InternalPoint.Coordinate, feature);
@@ -223,36 +276,54 @@ namespace DynamoNTS.IO
                         AddWaypoint(gpxRoot, p.InternalPoint.Coordinate, feature);
                     }
                 }
-                // 2. LineStrings & MultiLineStrings -> <trk>
+
                 else if (feature.Geometry is NtsLineString line)
                 {
                     var trkElem = new XElement(GpxNs + "trk");
-                    AppendFeatureMetadata(trkElem, feature);
+                    AppendTrackMetadata(trkElem, feature);
                     trkElem.Add(CreateTrackSegment(line.InternalLineString.Coordinates));
                     gpxRoot.Add(trkElem);
                 }
                 else if (feature.Geometry is NtsMultiLineString mline)
                 {
                     var trkElem = new XElement(GpxNs + "trk");
-                    AppendFeatureMetadata(trkElem, feature);
+                    AppendTrackMetadata(trkElem, feature);
                     foreach (var subLine in mline.Explode())
                     {
                         trkElem.Add(CreateTrackSegment(subLine.InternalLineString.Coordinates));
                     }
                     gpxRoot.Add(trkElem);
                 }
-                // 3. Polygons & MultiPolygons -> <trk>
+
                 else if (feature.Geometry is NtsPolygon poly)
                 {
+                    if (poly.InternalPolygon.NumInteriorRings > 0)
+                    {
+                        Trace.TraceWarning(
+                            $"[GPX.Write] Warning: Polygon in layer '{exportLayer.Name}' contains " +
+                            $"{poly.InternalPolygon.NumInteriorRings} interior ring(s) (holes). GPX only supports linear tracks and cannot represent holes; interior rings were omitted.");
+                    }
+
                     var trkElem = new XElement(GpxNs + "trk");
-                    AppendFeatureMetadata(trkElem, feature);
+                    AppendTrackMetadata(trkElem, feature);
                     trkElem.Add(CreateTrackSegment(poly.InternalPolygon.ExteriorRing.Coordinates));
                     gpxRoot.Add(trkElem);
                 }
                 else if (feature.Geometry is NtsMultiPolygon mpoly)
                 {
+                    int totalHoles = mpoly.InternalMultiPolygon.Geometries
+                        .OfType<Polygon>()
+                        .Sum(p => p.NumInteriorRings);
+
+                    if (totalHoles > 0)
+                    {
+                        Trace.TraceWarning(
+                            $"[GPX.Write] Warning: MultiPolygon in layer '{exportLayer.Name}' contains " +
+                            $"{totalHoles} total interior ring(s) (holes). GPX only supports linear tracks and cannot represent holes; interior rings were omitted.");
+                    }
+
                     var trkElem = new XElement(GpxNs + "trk");
-                    AppendFeatureMetadata(trkElem, feature);
+                    AppendTrackMetadata(trkElem, feature);
                     foreach (var subPoly in mpoly.Explode())
                     {
                         trkElem.Add(CreateTrackSegment(subPoly.InternalPolygon.ExteriorRing.Coordinates));
@@ -271,6 +342,9 @@ namespace DynamoNTS.IO
 
         #region Internal Helpers
 
+        /// <summary>
+        /// Adds a waypoint adhering to GPX 1.1 child order: ele -> time -> name -> desc.
+        /// </summary>
         private static void AddWaypoint(XElement root, Coordinate coord, NtsFeature feature)
         {
             if (coord == null) return;
@@ -284,8 +358,52 @@ namespace DynamoNTS.IO
                 wptElem.Add(new XElement(GpxNs + "ele", coord.Z.ToString("F3", CultureInfo.InvariantCulture)));
             }
 
-            AppendFeatureMetadata(wptElem, feature);
+            object? time = feature.GetValue("Time") ?? feature.GetValue("time");
+            if (time is DateTime dt)
+            {
+                wptElem.Add(new XElement(GpxNs + "time", dt.ToUniversalTime().ToString("yyyy-MM-ddTHH:mm:ssZ")));
+            }
+            else if (time is string timeStr && !string.IsNullOrWhiteSpace(timeStr))
+            {
+                if (DateTime.TryParse(timeStr, CultureInfo.InvariantCulture, DateTimeStyles.AdjustToUniversal, out var parsedDt))
+                {
+                    wptElem.Add(new XElement(GpxNs + "time", parsedDt.ToUniversalTime().ToString("yyyy-MM-ddTHH:mm:ssZ")));
+                }
+            }
+
+            object? name = feature.GetValue("Name") ?? feature.GetValue("name");
+            if (name != null && !string.IsNullOrWhiteSpace(name.ToString()))
+            {
+                wptElem.Add(new XElement(GpxNs + "name", name.ToString()));
+            }
+
+            // 4. <desc>
+            object? desc = feature.GetValue("Description") ?? feature.GetValue("desc") ?? feature.GetValue("description");
+            if (desc != null && !string.IsNullOrWhiteSpace(desc.ToString()))
+            {
+                wptElem.Add(new XElement(GpxNs + "desc", desc.ToString()));
+            }
+
             root.Add(wptElem);
+        }
+
+        /// <summary>
+        /// Appends track metadata allowed by GPX 1.1 trkType (name and desc).
+        /// Note: GPX 1.1 trkType does not allow a direct <time> child element.
+        /// </summary>
+        private static void AppendTrackMetadata(XElement trkElem, NtsFeature feature)
+        {
+            object? name = feature.GetValue("Name") ?? feature.GetValue("name");
+            if (name != null && !string.IsNullOrWhiteSpace(name.ToString()))
+            {
+                trkElem.Add(new XElement(GpxNs + "name", name.ToString()));
+            }
+
+            object? desc = feature.GetValue("Description") ?? feature.GetValue("desc") ?? feature.GetValue("description");
+            if (desc != null && !string.IsNullOrWhiteSpace(desc.ToString()))
+            {
+                trkElem.Add(new XElement(GpxNs + "desc", desc.ToString()));
+            }
         }
 
         private static XElement CreateTrackSegment(Coordinate[] coordinates)
@@ -365,27 +483,6 @@ namespace DynamoNTS.IO
             }
 
             return attrs;
-        }
-
-        private static void AppendFeatureMetadata(XElement targetElem, NtsFeature feature)
-        {
-            object? name = feature.GetValue("Name") ?? feature.GetValue("name");
-            if (name != null)
-            {
-                targetElem.Add(new XElement(GpxNs + "name", name.ToString()));
-            }
-
-            object? desc = feature.GetValue("Description") ?? feature.GetValue("desc") ?? feature.GetValue("description");
-            if (desc != null)
-            {
-                targetElem.Add(new XElement(GpxNs + "desc", desc.ToString()));
-            }
-
-            object? time = feature.GetValue("Time") ?? feature.GetValue("time");
-            if (time is DateTime dt)
-            {
-                targetElem.Add(new XElement(GpxNs + "time", dt.ToUniversalTime().ToString("yyyy-MM-ddTHH:mm:ssZ")));
-            }
         }
 
         private static void ValidateGeographicBounds(NtsLayer layer, string format)

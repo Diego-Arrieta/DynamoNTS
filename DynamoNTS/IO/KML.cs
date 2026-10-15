@@ -24,6 +24,7 @@ namespace DynamoNTS.IO
 
         /// <summary>
         /// Reads a KML file from disk and parses its Placemarks into an NtsLayer with WGS84 CRS.
+        /// Supports typed Schema definitions, SimpleData, and recursive geometry hierarchies.
         /// </summary>
         /// <param name="filePath">Path to the .kml file.</param>
         /// <param name="targetCrs">Optional target Coordinate Reference System to reproject the data into.</param>
@@ -44,6 +45,8 @@ namespace DynamoNTS.IO
             if (placemarks.Count == 0)
                 throw new InvalidOperationException("No Placemarks were found in the provided KML file.");
 
+            var schemaTypeMap = ParseSchemaTypeDefinitions(doc);
+
             var features = new List<NtsFeature>();
             var fieldNames = new List<string>();
             var seenNames = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
@@ -51,7 +54,7 @@ namespace DynamoNTS.IO
 
             foreach (var placemark in placemarks)
             {
-                var ntsGeom = ParseGeometry(placemark, geomFactory);
+                var ntsGeom = ParseGeometryNode(placemark, geomFactory);
                 if (ntsGeom == null || ntsGeom.IsEmpty) continue;
 
                 var wrappedGeom = NtsGeometry.WrapGeometry(ntsGeom);
@@ -80,7 +83,20 @@ namespace DynamoNTS.IO
                         string? attrVal = data.Elements().FirstOrDefault(e => e.Name.LocalName == "value")?.Value;
                         if (!string.IsNullOrEmpty(attrName))
                         {
-                            rawAttrs[attrName] = attrVal;
+                            rawAttrs[attrName] = CoerceKmlValue(attrVal, attrName, schemaTypeMap);
+                        }
+                    }
+
+                    foreach (var schemaData in extendedData.Elements().Where(e => e.Name.LocalName == "SchemaData"))
+                    {
+                        foreach (var simpleData in schemaData.Elements().Where(e => e.Name.LocalName == "SimpleData"))
+                        {
+                            string? attrName = simpleData.Attribute("name")?.Value;
+                            string? attrVal = simpleData.Value;
+                            if (!string.IsNullOrEmpty(attrName))
+                            {
+                                rawAttrs[attrName] = CoerceKmlValue(attrVal, attrName, schemaTypeMap);
+                            }
                         }
                     }
                 }
@@ -123,15 +139,12 @@ namespace DynamoNTS.IO
         }
 
         /// <summary>
-        /// Writes an NtsLayer to disk as a KML 2.2 document.
+        /// Writes an NtsLayer to disk as a KML 2.2 document with typed Schema and ISO 8601 timestamps.
         /// Reprojects to WGS84 if a different CRS is defined, or validates geographic coordinate bounds if CRS is undefined.
         /// </summary>
         /// <param name="layer">The NtsLayer to export.</param>
         /// <param name="filePath">Target destination path (.kml).</param>
         /// <returns name="success">True if export succeeded.</returns>
-        /// <exception cref="ArgumentNullException">Thrown when layer is null.</exception>
-        /// <exception cref="ArgumentException">Thrown when filePath is null or whitespace.</exception>
-        /// <exception cref="InvalidOperationException">Thrown when the layer is empty or coordinates fall outside WGS84 bounds.</exception>
         public static bool Write(NtsLayer layer, string filePath)
         {
             if (layer == null) throw new ArgumentNullException(nameof(layer));
@@ -163,6 +176,29 @@ namespace DynamoNTS.IO
             var documentElem = new XElement(KmlNs + "Document",
                 new XElement(KmlNs + "name", exportLayer.Name));
 
+            string schemaId = $"{exportLayer.Name}_Schema";
+            var schemaFields = exportLayer.Schema.Fields
+                .Where(f => !f.Name.Equals("Name", StringComparison.OrdinalIgnoreCase) &&
+                            !f.Name.Equals("Description", StringComparison.OrdinalIgnoreCase))
+                .ToList();
+
+            if (schemaFields.Count > 0)
+            {
+                var schemaElem = new XElement(KmlNs + "Schema",
+                    new XAttribute("name", exportLayer.Name),
+                    new XAttribute("id", schemaId));
+
+                foreach (var field in schemaFields)
+                {
+                    string kmlType = MapFieldTypeToKmlType(field.Type);
+                    schemaElem.Add(new XElement(KmlNs + "SimpleField",
+                        new XAttribute("name", field.Name),
+                        new XAttribute("type", kmlType)));
+                }
+
+                documentElem.Add(schemaElem);
+            }
+
             foreach (var feature in exportLayer.Features)
             {
                 if (feature?.Geometry == null) continue;
@@ -181,26 +217,27 @@ namespace DynamoNTS.IO
                     placemark.Add(new XElement(KmlNs + "description", descVal.ToString()));
                 }
 
-                if (exportLayer.Schema.FieldCount > 0)
+                if (schemaFields.Count > 0)
                 {
                     var extendedData = new XElement(KmlNs + "ExtendedData");
-                    foreach (var field in exportLayer.Schema.Fields)
-                    {
-                        if (field.Name.Equals("Name", StringComparison.OrdinalIgnoreCase) ||
-                            field.Name.Equals("Description", StringComparison.OrdinalIgnoreCase))
-                            continue;
+                    var schemaData = new XElement(KmlNs + "SchemaData",
+                        new XAttribute("schemaUrl", $"#{schemaId}"));
 
+                    foreach (var field in schemaFields)
+                    {
                         object? val = feature.GetValue(field.Name);
                         if (val != null)
                         {
-                            extendedData.Add(new XElement(KmlNs + "Data",
+                            string formattedVal = FormatKmlValue(val, field.Type);
+                            schemaData.Add(new XElement(KmlNs + "SimpleData",
                                 new XAttribute("name", field.Name),
-                                new XElement(KmlNs + "value", Convert.ToString(val, CultureInfo.InvariantCulture))));
+                                formattedVal));
                         }
                     }
 
-                    if (extendedData.HasElements)
+                    if (schemaData.HasElements)
                     {
+                        extendedData.Add(schemaData);
                         placemark.Add(extendedData);
                     }
                 }
@@ -222,74 +259,92 @@ namespace DynamoNTS.IO
 
         #endregion
 
-        #region Internal Helpers
+        #region Geometry Parsing (B34: Recursive Parser)
 
-        private static NetTopologySuite.Geometries.Geometry? ParseGeometry(XElement element, GeometryFactory factory)
+        /// <summary>
+        /// Recursively parses geometries from direct child elements without using broad descendant queries.
+        /// </summary>
+        private static NetTopologySuite.Geometries.Geometry? ParseGeometryNode(XElement parent, GeometryFactory factory)
         {
-            var multiElem = element.Descendants().FirstOrDefault(e => e.Name.LocalName == "MultiGeometry");
-            if (multiElem != null)
+            var geoms = new List<NetTopologySuite.Geometries.Geometry>();
+
+            foreach (var child in parent.Elements())
             {
-                var children = new List<NetTopologySuite.Geometries.Geometry>();
-                foreach (var child in multiElem.Elements())
+                string localName = child.Name.LocalName;
+
+                if (localName.Equals("MultiGeometry", StringComparison.OrdinalIgnoreCase))
                 {
-                    var parsed = ParseSingleGeometry(child, factory);
-                    if (parsed != null && !parsed.IsEmpty)
+                    var subGeom = ParseGeometryNode(child, factory);
+                    if (subGeom != null && !subGeom.IsEmpty)
                     {
-                        children.Add(parsed);
+                        geoms.Add(subGeom);
                     }
                 }
-
-                if (children.Count > 0)
+                else if (localName.Equals("Point", StringComparison.OrdinalIgnoreCase))
                 {
-                    return factory.BuildGeometry(children);
+                    var parsed = ParsePointElement(child, factory);
+                    if (parsed != null) geoms.Add(parsed);
+                }
+                else if (localName.Equals("LineString", StringComparison.OrdinalIgnoreCase))
+                {
+                    var parsed = ParseLineStringElement(child, factory);
+                    if (parsed != null) geoms.Add(parsed);
+                }
+                else if (localName.Equals("Polygon", StringComparison.OrdinalIgnoreCase))
+                {
+                    var parsed = ParsePolygonElement(child, factory);
+                    if (parsed != null) geoms.Add(parsed);
                 }
             }
 
-            return ParseSingleGeometry(element, factory);
+            if (geoms.Count == 0) return null;
+            if (geoms.Count == 1) return geoms[0];
+
+            return factory.BuildGeometry(geoms);
         }
 
-        private static NetTopologySuite.Geometries.Geometry? ParseSingleGeometry(XElement elem, GeometryFactory factory)
+        private static NetTopologySuite.Geometries.Point? ParsePointElement(XElement pointElem, GeometryFactory factory)
         {
-            var pointElem = elem.DescendantsAndSelf().FirstOrDefault(e => e.Name.LocalName == "Point");
-            if (pointElem != null)
+            var coordsElem = pointElem.Elements().FirstOrDefault(e => e.Name.LocalName == "coordinates");
+            var coords = ParseCoordinates(coordsElem?.Value);
+            return coords.Length > 0 ? factory.CreatePoint(coords[0]) : null;
+        }
+
+        private static NetTopologySuite.Geometries.LineString? ParseLineStringElement(XElement lineElem, GeometryFactory factory)
+        {
+            var coordsElem = lineElem.Elements().FirstOrDefault(e => e.Name.LocalName == "coordinates");
+            var coords = ParseCoordinates(coordsElem?.Value);
+            return coords.Length >= 2 ? factory.CreateLineString(coords) : null;
+        }
+
+        private static NetTopologySuite.Geometries.Polygon? ParsePolygonElement(XElement polyElem, GeometryFactory factory)
+        {
+            var outerElem = polyElem.Elements().FirstOrDefault(e => e.Name.LocalName == "outerBoundaryIs");
+            var outerCoordsElem = outerElem?.Elements().FirstOrDefault(e => e.Name.LocalName == "LinearRing")
+                                           ?.Elements().FirstOrDefault(e => e.Name.LocalName == "coordinates")
+                                 ?? outerElem?.Descendants().FirstOrDefault(e => e.Name.LocalName == "coordinates");
+
+            var outerCoords = ParseCoordinates(outerCoordsElem?.Value);
+            if (outerCoords.Length < 3) return null;
+
+            var shell = CreateClosedRing(outerCoords, factory);
+
+            var holes = new List<LinearRing>();
+            var inners = polyElem.Elements().Where(e => e.Name.LocalName == "innerBoundaryIs");
+            foreach (var inner in inners)
             {
-                var coordsElem = pointElem.Elements().FirstOrDefault(e => e.Name.LocalName == "coordinates");
-                var coords = ParseCoordinates(coordsElem?.Value);
-                if (coords.Length > 0) return factory.CreatePoint(coords[0]);
-            }
+                var innerCoordsElem = inner.Elements().FirstOrDefault(e => e.Name.LocalName == "LinearRing")
+                                          ?.Elements().FirstOrDefault(e => e.Name.LocalName == "coordinates")
+                                     ?? inner.Descendants().FirstOrDefault(e => e.Name.LocalName == "coordinates");
 
-            var lineElem = elem.DescendantsAndSelf().FirstOrDefault(e => e.Name.LocalName == "LineString");
-            if (lineElem != null)
-            {
-                var coordsElem = lineElem.Elements().FirstOrDefault(e => e.Name.LocalName == "coordinates");
-                var coords = ParseCoordinates(coordsElem?.Value);
-                if (coords.Length >= 2) return factory.CreateLineString(coords);
-            }
-
-            var polyElem = elem.DescendantsAndSelf().FirstOrDefault(e => e.Name.LocalName == "Polygon");
-            if (polyElem != null)
-            {
-                var outerElem = polyElem.Elements().FirstOrDefault(e => e.Name.LocalName == "outerBoundaryIs");
-                var outerCoords = ParseCoordinates(outerElem?.Descendants().FirstOrDefault(e => e.Name.LocalName == "coordinates")?.Value);
-                if (outerCoords.Length < 3) return null;
-
-                var shell = CreateClosedRing(outerCoords, factory);
-
-                var holes = new List<LinearRing>();
-                var inners = polyElem.Elements().Where(e => e.Name.LocalName == "innerBoundaryIs");
-                foreach (var inner in inners)
+                var innerCoords = ParseCoordinates(innerCoordsElem?.Value);
+                if (innerCoords.Length >= 3)
                 {
-                    var innerCoords = ParseCoordinates(inner.Descendants().FirstOrDefault(e => e.Name.LocalName == "coordinates")?.Value);
-                    if (innerCoords.Length >= 3)
-                    {
-                        holes.Add(CreateClosedRing(innerCoords, factory));
-                    }
+                    holes.Add(CreateClosedRing(innerCoords, factory));
                 }
-
-                return factory.CreatePolygon(shell, holes.ToArray());
             }
 
-            return null;
+            return factory.CreatePolygon(shell, holes.ToArray());
         }
 
         private static LinearRing CreateClosedRing(Coordinate[] coords, GeometryFactory factory)
@@ -330,6 +385,10 @@ namespace DynamoNTS.IO
 
             return coordinates.ToArray();
         }
+
+        #endregion
+
+        #region Serialization Helpers
 
         private static XElement? ConvertGeometryToKml(NetTopologySuite.Geometries.Geometry geometry)
         {
@@ -404,6 +463,107 @@ namespace DynamoNTS.IO
                 return string.Format(CultureInfo.InvariantCulture, "{0},{1},{2}", c.X, c.Y, c.Z);
             }
             return string.Format(CultureInfo.InvariantCulture, "{0},{1}", c.X, c.Y);
+        }
+
+        #endregion
+
+        #region Schema and Type Helpers (B32, B33)
+
+        private static Dictionary<string, string> ParseSchemaTypeDefinitions(XDocument doc)
+        {
+            var dict = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+
+            var schemas = doc.Descendants().Where(e => e.Name.LocalName == "Schema");
+            foreach (var schema in schemas)
+            {
+                foreach (var field in schema.Elements().Where(e => e.Name.LocalName == "SimpleField"))
+                {
+                    string? name = field.Attribute("name")?.Value;
+                    string? type = field.Attribute("type")?.Value;
+
+                    if (!string.IsNullOrEmpty(name) && !string.IsNullOrEmpty(type))
+                    {
+                        dict[name] = type.ToLowerInvariant();
+                    }
+                }
+            }
+
+            return dict;
+        }
+
+        private static object? CoerceKmlValue(string? rawVal, string fieldName, Dictionary<string, string> schemaTypes)
+        {
+            if (rawVal == null) return null;
+
+            if (schemaTypes.TryGetValue(fieldName, out string? declaredType))
+            {
+                switch (declaredType)
+                {
+                    case "int":
+                    case "uint":
+                    case "short":
+                    case "ushort":
+                        if (int.TryParse(rawVal, NumberStyles.Integer, CultureInfo.InvariantCulture, out int intVal))
+                            return intVal;
+                        break;
+
+                    case "float":
+                    case "double":
+                        if (double.TryParse(rawVal, NumberStyles.Float, CultureInfo.InvariantCulture, out double dblVal))
+                            return dblVal;
+                        break;
+
+                    case "bool":
+                        if (bool.TryParse(rawVal, out bool boolVal))
+                            return boolVal;
+                        if (rawVal == "1") return true;
+                        if (rawVal == "0") return false;
+                        break;
+
+                    case "string":
+                        return rawVal;
+                }
+            }
+
+            if (int.TryParse(rawVal, NumberStyles.Integer, CultureInfo.InvariantCulture, out int inferredInt))
+                return inferredInt;
+
+            if (double.TryParse(rawVal, NumberStyles.Float, CultureInfo.InvariantCulture, out double inferredDouble))
+                return inferredDouble;
+
+            if (bool.TryParse(rawVal, out bool inferredBool))
+                return inferredBool;
+
+            if (DateTime.TryParse(rawVal, CultureInfo.InvariantCulture, DateTimeStyles.AdjustToUniversal, out DateTime parsedDt))
+                return parsedDt;
+
+            return rawVal;
+        }
+
+        private static string MapFieldTypeToKmlType(NtsFieldType type)
+        {
+            return type switch
+            {
+                NtsFieldType.Integer => "int",
+                NtsFieldType.Double => "double",
+                NtsFieldType.Boolean => "bool",
+                _ => "string"
+            };
+        }
+
+        private static string FormatKmlValue(object val, NtsFieldType type)
+        {
+            if (val is DateTime dt)
+            {
+                return dt.ToUniversalTime().ToString("yyyy-MM-ddTHH:mm:ssZ", CultureInfo.InvariantCulture);
+            }
+
+            if (val is IFormattable formattable)
+            {
+                return formattable.ToString(null, CultureInfo.InvariantCulture);
+            }
+
+            return val.ToString() ?? string.Empty;
         }
 
         private static void ValidateGeographicBounds(NtsLayer layer, string format)
