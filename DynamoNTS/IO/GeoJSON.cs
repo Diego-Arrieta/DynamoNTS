@@ -88,16 +88,27 @@ namespace DynamoNTS.IO
         }
 
         /// <summary>
-        /// Writes an NtsLayer to disk in GeoJSON FeatureCollection format.
+        /// Writes an NtsLayer to disk in GeoJSON FeatureCollection format (RFC 7946).
+        /// Automatically reprojects geometries to WGS84 (EPSG:4326) if the layer uses a different CRS.
         /// </summary>
         /// <param name="layer">The NtsLayer to export.</param>
         /// <param name="filePath">Target destination path (.geojson).</param>
         /// <returns name="success">True if export succeeded.</returns>
+        /// <exception cref="ArgumentNullException">Thrown when layer is null.</exception>
+        /// <exception cref="ArgumentException">Thrown when filePath is null or whitespace.</exception>
+        /// <exception cref="InvalidOperationException">Thrown when the layer has no defined Coordinate Reference System.</exception>
         public static bool WriteLayer(NtsLayer layer, string filePath)
         {
             if (layer == null) throw new ArgumentNullException(nameof(layer));
             if (string.IsNullOrWhiteSpace(filePath))
                 throw new ArgumentException("File path cannot be null or empty.", nameof(filePath));
+
+            if (layer.CoordinateSystem == null)
+            {
+                throw new InvalidOperationException(
+                    $"Cannot export layer '{layer.Name}' to GeoJSON because it has no Coordinate Reference System (CRS) defined. " +
+                    "RFC 7946 requires WGS84 (EPSG:4326). Assign a CRS to the layer before exporting.");
+            }
 
             string? dir = Path.GetDirectoryName(filePath);
             if (!string.IsNullOrEmpty(dir) && !Directory.Exists(dir))
@@ -105,8 +116,14 @@ namespace DynamoNTS.IO
                 Directory.CreateDirectory(dir);
             }
 
+            NtsLayer exportLayer = layer;
+            if (!layer.CoordinateSystem.IsEquivalentTo(NtsCoordinateSystem.WGS84))
+            {
+                exportLayer = layer.Reproject(NtsCoordinateSystem.WGS84);
+            }
+
             var writer = new GeoJsonWriter();
-            string json = writer.Write(layer.InternalCollection);
+            string json = writer.Write(exportLayer.InternalCollection);
 
             File.WriteAllText(filePath, json);
             return true;

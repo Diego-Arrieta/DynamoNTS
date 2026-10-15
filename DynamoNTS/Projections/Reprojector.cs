@@ -16,6 +16,7 @@ namespace DynamoNTS.Projections
 
         /// <summary>
         /// Reprojects an NtsGeometry from a source Coordinate Reference System to a target Coordinate Reference System.
+        /// If both systems are equivalent, a copy of the geometry with updated SRID is returned without reprojecting.
         /// </summary>
         /// <param name="geometry">The topological geometry to reproject.</param>
         /// <param name="source">The source coordinate reference system.</param>
@@ -30,11 +31,14 @@ namespace DynamoNTS.Projections
             if (source == null) throw new ArgumentNullException(nameof(source));
             if (target == null) throw new ArgumentNullException(nameof(target));
 
-            // If both systems share the same non-zero EPSG code, return a clone of the geometry
-            if (source.EPSG != 0 && source.EPSG == target.EPSG)
+            if (source.IsEquivalentTo(target))
             {
-                var cloneSame = (NetTopologySuite.Geometries.Geometry)geometry.InternalGeometry.Copy();
-                return NtsGeometry.WrapGeometry(cloneSame);
+                var copy = (NetTopologySuite.Geometries.Geometry)geometry.InternalGeometry.Copy();
+                if (target.EPSG != 0)
+                {
+                    copy.SRID = target.EPSG;
+                }
+                return NtsGeometry.WrapGeometry(copy);
             }
 
             var transformFactory = new CoordinateTransformationFactory();
@@ -42,7 +46,6 @@ namespace DynamoNTS.Projections
                 source.InternalCRS,
                 target.InternalCRS);
 
-            // Clone internal geometry to avoid mutating the original instance in memory
             var cloned = (NetTopologySuite.Geometries.Geometry)geometry.InternalGeometry.Copy();
             var filter = new CoordinateTransformationFilter(transformation.MathTransform);
             cloned.Apply(filter);
@@ -78,7 +81,6 @@ namespace DynamoNTS.Projections
                 throw new InvalidOperationException("Failed to reproject feature geometry.");
             }
 
-            // Desacoplamos la tabla de atributos clonando el record
             var clonedRecord = feature.Record.Clone();
             var concreteFeature = new Feature(reprojectedGeometry.InternalGeometry, clonedRecord.InternalTable);
             return new NtsFeature(concreteFeature, reprojectedGeometry, clonedRecord);
@@ -100,6 +102,11 @@ namespace DynamoNTS.Projections
         {
             if (source == null) throw new ArgumentNullException(nameof(source));
             if (target == null) throw new ArgumentNullException(nameof(target));
+
+            if (source.IsEquivalentTo(target))
+            {
+                return new[] { x, y };
+            }
 
             var transformFactory = new CoordinateTransformationFactory();
             var transformation = transformFactory.CreateFromCoordinateSystems(

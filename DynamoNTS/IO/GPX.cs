@@ -56,7 +56,6 @@ namespace DynamoNTS.IO
                 }
             }
 
-            // 1. Parse Waypoints (<wpt>) -> NtsPoint
             var waypoints = doc.Descendants().Where(e => e.Name.LocalName == "wpt");
             foreach (var wpt in waypoints)
             {
@@ -74,7 +73,6 @@ namespace DynamoNTS.IO
                 features.Add(NtsFeature.ByRecord(pointGeom, record));
             }
 
-            // 2. Parse Routes (<rte>) -> NtsLineString
             var routes = doc.Descendants().Where(e => e.Name.LocalName == "rte");
             foreach (var rte in routes)
             {
@@ -98,7 +96,6 @@ namespace DynamoNTS.IO
                 features.Add(NtsFeature.ByRecord(lineGeom, record));
             }
 
-            // 3. Parse Tracks (<trk>) -> NtsLineString
             var tracks = doc.Descendants().Where(e => e.Name.LocalName == "trk");
             foreach (var trk in tracks)
             {
@@ -145,7 +142,7 @@ namespace DynamoNTS.IO
             string layerName = Path.GetFileNameWithoutExtension(filePath);
             var layer = NtsLayer.ByFeatures(features, layerName, NtsCoordinateSystem.WGS84, schema);
 
-            if (targetCrs != null && targetCrs.EPSG != NtsCoordinateSystem.WGS84.EPSG)
+            if (targetCrs != null && !targetCrs.IsEquivalentTo(NtsCoordinateSystem.WGS84))
             {
                 return layer.Reproject(targetCrs);
             }
@@ -154,11 +151,15 @@ namespace DynamoNTS.IO
         }
 
         /// <summary>
-        /// Writes an NtsLayer to disk as a GPX 1.1 file. Reprojects to WGS84 if a different CRS is defined.
+        /// Writes an NtsLayer to disk as a GPX 1.1 file.
+        /// Reprojects to WGS84 if a different CRS is defined, or validates geographic coordinate bounds if CRS is undefined.
         /// </summary>
         /// <param name="layer">The NtsLayer to export.</param>
         /// <param name="filePath">Target destination path (.gpx).</param>
         /// <returns name="success">True if export succeeded.</returns>
+        /// <exception cref="ArgumentNullException">Thrown when layer is null.</exception>
+        /// <exception cref="ArgumentException">Thrown when filePath is null or whitespace.</exception>
+        /// <exception cref="InvalidOperationException">Thrown when the layer is empty or coordinates fall outside WGS84 bounds.</exception>
         public static bool Write(NtsLayer layer, string filePath)
         {
             if (layer == null) throw new ArgumentNullException(nameof(layer));
@@ -175,9 +176,16 @@ namespace DynamoNTS.IO
             }
 
             NtsLayer exportLayer = layer;
-            if (layer.CoordinateSystem != null && layer.CoordinateSystem.EPSG != 4326)
+            if (layer.CoordinateSystem != null)
             {
-                exportLayer = layer.Reproject(NtsCoordinateSystem.WGS84);
+                if (!layer.CoordinateSystem.IsEquivalentTo(NtsCoordinateSystem.WGS84))
+                {
+                    exportLayer = layer.Reproject(NtsCoordinateSystem.WGS84);
+                }
+            }
+            else
+            {
+                ValidateGeographicBounds(layer, "GPX");
             }
 
             // Root metadata with geographical extents (<bounds>)
@@ -377,6 +385,21 @@ namespace DynamoNTS.IO
             if (time is DateTime dt)
             {
                 targetElem.Add(new XElement(GpxNs + "time", dt.ToUniversalTime().ToString("yyyy-MM-ddTHH:mm:ssZ")));
+            }
+        }
+
+        private static void ValidateGeographicBounds(NtsLayer layer, string format)
+        {
+            var env = layer.Extents()?.InternalGeometry?.EnvelopeInternal;
+            if (env == null || env.IsNull) return;
+
+            if (env.MinX < -180.0 || env.MaxX > 180.0 || env.MinY < -90.0 || env.MaxY > 90.0)
+            {
+                throw new InvalidOperationException(
+                    $"Cannot export layer '{layer.Name}' to {format} because it has no Coordinate Reference System (CRS) defined " +
+                    $"and its coordinates fall outside valid WGS84 geographic limits (Longitude: [-180, 180], Latitude: [-90, 90]). " +
+                    $"Detected bounds: [X: {env.MinX:F2}..{env.MaxX:F2}, Y: {env.MinY:F2}..{env.MaxY:F2}]. " +
+                    "The data appears to use projected coordinates (e.g., UTM). Assign a CRS before exporting.");
             }
         }
 

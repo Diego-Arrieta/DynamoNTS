@@ -352,6 +352,20 @@ namespace DynamoNTS.Data
         /// <returns name="record">A new NtsRecord instance with the update.</returns>
         public NtsRecord WithValueByName(string fieldName, object? value) => WithValue(fieldName, value);
 
+        /// <summary>
+        /// Converts the record attributes into a standard key-value dictionary.
+        /// </summary>
+        /// <returns>A dictionary containing field names and their corresponding values.</returns>
+        public Dictionary<string, object?> ToDictionary()
+        {
+            var dict = new Dictionary<string, object?>(StringComparer.OrdinalIgnoreCase);
+            foreach (var key in Keys)
+            {
+                dict[key] = GetValue(key);
+            }
+            return dict;
+        }
+
         #endregion
 
         #region Helpers

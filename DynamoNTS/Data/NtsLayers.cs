@@ -37,6 +37,12 @@ namespace DynamoNTS.Data
         public string Name { get; }
 
         /// <summary>
+        /// Gets or sets the origin source of the layer's Coordinate Reference System.
+        /// Possible values include: "prj", "override", "unreadable", or "none".
+        /// </summary>
+        public string CrsSource { get; set; } = "none";
+
+        /// <summary>
         /// Gets the formal attribute schema shared across all features in this layer.
         /// </summary>
         public NtsSchema Schema { get; }

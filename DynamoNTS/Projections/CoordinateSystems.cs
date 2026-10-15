@@ -1,6 +1,7 @@
 ﻿using Autodesk.DesignScript.Runtime;
 using System;
 using System.IO;
+using System.Text.RegularExpressions;
 using ProjCS = ProjNet.CoordinateSystems;
 
 namespace DynamoNTS.Projections
@@ -34,7 +35,7 @@ namespace DynamoNTS.Projections
 
         /// <summary>
         /// Resolves a Coordinate Reference System using its standardized EPSG authority code.
-        /// Supports WGS84 (4326), Web Mercator (3857), and standard WGS84 UTM zones (32601-32660, 32701-32760).
+        /// Supports WGS84 (4326), Web Mercator (3857, 900913), and standard WGS84 UTM zones (32601-32660, 32701-32760).
         /// </summary>
         /// <param name="epsgCode">The numeric EPSG identifier code.</param>
         /// <returns name="coordinateSystem">The resolved NtsCoordinateSystem instance.</returns>
@@ -73,6 +74,7 @@ namespace DynamoNTS.Projections
 
         /// <summary>
         /// Creates a Coordinate Reference System from an OGC Well-Known Text (WKT) projection string.
+        /// Automatically extracts the EPSG authority code if defined.
         /// </summary>
         /// <param name="wktString">The Well-Known Text (WKT) coordinate system definition string.</param>
         /// <returns name="coordinateSystem">The instantiated NtsCoordinateSystem instance.</returns>
@@ -84,7 +86,8 @@ namespace DynamoNTS.Projections
             var csFactory = new ProjCS.CoordinateSystemFactory();
             var crs = csFactory.CreateFromWkt(wktString);
 
-            return new NtsCoordinateSystem(crs);
+            int epsg = ExtractEpsgCode(crs, wktString);
+            return new NtsCoordinateSystem(crs, epsg);
         }
 
         /// <summary>
@@ -130,7 +133,67 @@ namespace DynamoNTS.Projections
 
         #endregion
 
-        #region Helper Methods
+        #region Comparison & Equivalence
+
+        /// <summary>
+        /// Determines whether this coordinate reference system is functionally equivalent to another CRS
+        /// by matching EPSG identifiers, ProjNet parameters, or WKT definitions.
+        /// </summary>
+        /// <param name="other">The coordinate reference system to compare against.</param>
+        /// <returns>True if both systems represent the same coordinate definition; otherwise, false.</returns>
+        public bool IsEquivalentTo(NtsCoordinateSystem? other)
+        {
+            if (other is null) return false;
+            if (ReferenceEquals(this, other)) return true;
+
+            if (EPSG != 0 && other.EPSG != 0 && EPSG == other.EPSG)
+                return true;
+
+            if (InternalCRS != null && other.InternalCRS != null)
+            {
+                try
+                {
+                    if (InternalCRS.EqualParams(other.InternalCRS))
+                        return true;
+                }
+                catch
+                {
+                    // Fall back to WKT comparison if parameter extraction fails
+                }
+
+                if (string.Equals(InternalCRS.WKT, other.InternalCRS.WKT, StringComparison.OrdinalIgnoreCase))
+                    return true;
+            }
+
+            return false;
+        }
+
+        #endregion
+
+        #region Internal Helpers
+
+        private static int ExtractEpsgCode(ProjCS.CoordinateSystem crs, string wktString)
+        {
+            if (!string.IsNullOrEmpty(crs.Authority) && crs.Authority.Equals("EPSG", StringComparison.OrdinalIgnoreCase))
+            {
+                if (int.TryParse(crs.AuthorityCode.ToString(), out int parsedEpsg) && parsedEpsg > 0)
+                {
+                    return parsedEpsg;
+                }
+            }
+
+            var match = Regex.Match(
+                wktString,
+                @"AUTHORITY\[\s*""EPSG""\s*,\s*""?(\d+)""?\s*\]",
+                RegexOptions.IgnoreCase | RegexOptions.RightToLeft);
+
+            if (match.Success && int.TryParse(match.Groups[1].Value, out int regexEpsg) && regexEpsg > 0)
+            {
+                return regexEpsg;
+            }
+
+            return 0;
+        }
 
         private static string BuildUtmWkt(int zone, bool isNorth)
         {

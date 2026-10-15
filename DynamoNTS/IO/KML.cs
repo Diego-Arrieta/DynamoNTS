@@ -51,14 +51,12 @@ namespace DynamoNTS.IO
 
             foreach (var placemark in placemarks)
             {
-                // 1. Parse Geometry (including MultiGeometry and polygons with holes)
                 var ntsGeom = ParseGeometry(placemark, geomFactory);
                 if (ntsGeom == null || ntsGeom.IsEmpty) continue;
 
                 var wrappedGeom = NtsGeometry.WrapGeometry(ntsGeom);
                 if (wrappedGeom == null) continue;
 
-                // 2. Parse Attributes (Name, Description, ExtendedData)
                 var rawAttrs = new Dictionary<string, object?>(StringComparer.OrdinalIgnoreCase);
 
                 var nameElem = placemark.Elements().FirstOrDefault(e => e.Name.LocalName == "name");
@@ -116,7 +114,7 @@ namespace DynamoNTS.IO
             string layerName = Path.GetFileNameWithoutExtension(filePath);
             var layer = NtsLayer.ByFeatures(features, layerName, NtsCoordinateSystem.WGS84, schema);
 
-            if (targetCrs != null && targetCrs.EPSG != NtsCoordinateSystem.WGS84.EPSG)
+            if (targetCrs != null && !targetCrs.IsEquivalentTo(NtsCoordinateSystem.WGS84))
             {
                 return layer.Reproject(targetCrs);
             }
@@ -125,11 +123,15 @@ namespace DynamoNTS.IO
         }
 
         /// <summary>
-        /// Writes an NtsLayer to disk as a KML 2.2 document. Reprojects to WGS84 if a different CRS is defined.
+        /// Writes an NtsLayer to disk as a KML 2.2 document.
+        /// Reprojects to WGS84 if a different CRS is defined, or validates geographic coordinate bounds if CRS is undefined.
         /// </summary>
         /// <param name="layer">The NtsLayer to export.</param>
         /// <param name="filePath">Target destination path (.kml).</param>
         /// <returns name="success">True if export succeeded.</returns>
+        /// <exception cref="ArgumentNullException">Thrown when layer is null.</exception>
+        /// <exception cref="ArgumentException">Thrown when filePath is null or whitespace.</exception>
+        /// <exception cref="InvalidOperationException">Thrown when the layer is empty or coordinates fall outside WGS84 bounds.</exception>
         public static bool Write(NtsLayer layer, string filePath)
         {
             if (layer == null) throw new ArgumentNullException(nameof(layer));
@@ -146,9 +148,16 @@ namespace DynamoNTS.IO
             }
 
             NtsLayer exportLayer = layer;
-            if (layer.CoordinateSystem != null && layer.CoordinateSystem.EPSG != 4326)
+            if (layer.CoordinateSystem != null)
             {
-                exportLayer = layer.Reproject(NtsCoordinateSystem.WGS84);
+                if (!layer.CoordinateSystem.IsEquivalentTo(NtsCoordinateSystem.WGS84))
+                {
+                    exportLayer = layer.Reproject(NtsCoordinateSystem.WGS84);
+                }
+            }
+            else
+            {
+                ValidateGeographicBounds(layer, "KML");
             }
 
             var documentElem = new XElement(KmlNs + "Document",
@@ -217,7 +226,6 @@ namespace DynamoNTS.IO
 
         private static NetTopologySuite.Geometries.Geometry? ParseGeometry(XElement element, GeometryFactory factory)
         {
-            // 1. MultiGeometry
             var multiElem = element.Descendants().FirstOrDefault(e => e.Name.LocalName == "MultiGeometry");
             if (multiElem != null)
             {
@@ -237,13 +245,11 @@ namespace DynamoNTS.IO
                 }
             }
 
-            // 2. Direct individual geometry
             return ParseSingleGeometry(element, factory);
         }
 
         private static NetTopologySuite.Geometries.Geometry? ParseSingleGeometry(XElement elem, GeometryFactory factory)
         {
-            // Point
             var pointElem = elem.DescendantsAndSelf().FirstOrDefault(e => e.Name.LocalName == "Point");
             if (pointElem != null)
             {
@@ -252,7 +258,6 @@ namespace DynamoNTS.IO
                 if (coords.Length > 0) return factory.CreatePoint(coords[0]);
             }
 
-            // LineString
             var lineElem = elem.DescendantsAndSelf().FirstOrDefault(e => e.Name.LocalName == "LineString");
             if (lineElem != null)
             {
@@ -261,7 +266,6 @@ namespace DynamoNTS.IO
                 if (coords.Length >= 2) return factory.CreateLineString(coords);
             }
 
-            // Polygon (supporting innerBoundaryIs)
             var polyElem = elem.DescendantsAndSelf().FirstOrDefault(e => e.Name.LocalName == "Polygon");
             if (polyElem != null)
             {
@@ -400,6 +404,21 @@ namespace DynamoNTS.IO
                 return string.Format(CultureInfo.InvariantCulture, "{0},{1},{2}", c.X, c.Y, c.Z);
             }
             return string.Format(CultureInfo.InvariantCulture, "{0},{1}", c.X, c.Y);
+        }
+
+        private static void ValidateGeographicBounds(NtsLayer layer, string format)
+        {
+            var env = layer.Extents()?.InternalGeometry?.EnvelopeInternal;
+            if (env == null || env.IsNull) return;
+
+            if (env.MinX < -180.0 || env.MaxX > 180.0 || env.MinY < -90.0 || env.MaxY > 90.0)
+            {
+                throw new InvalidOperationException(
+                    $"Cannot export layer '{layer.Name}' to {format} because it has no Coordinate Reference System (CRS) defined " +
+                    $"and its coordinates fall outside valid WGS84 geographic limits (Longitude: [-180, 180], Latitude: [-90, 90]). " +
+                    $"Detected bounds: [X: {env.MinX:F2}..{env.MaxX:F2}, Y: {env.MinY:F2}..{env.MaxY:F2}]. " +
+                    "The data appears to use projected coordinates (e.g., UTM). Assign a CRS before exporting.");
+            }
         }
 
         #endregion

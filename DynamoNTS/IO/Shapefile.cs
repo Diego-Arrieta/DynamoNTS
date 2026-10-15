@@ -28,6 +28,7 @@ namespace DynamoNTS.IO
         /// <summary>
         /// Reads an ESRI Shapefile from disk, preserving its native CRS or reprojecting geometries if a target CRS is provided.
         /// Handles empty shapefiles gracefully by returning an empty NtsLayer with the schema extracted from DBF.
+        /// Logs a diagnostic warning if the .prj projection file exists but cannot be parsed.
         /// </summary>
         /// <param name="shpPath">Full path to the .shp file.</param>
         /// <param name="crsOverride">Optional target Coordinate Reference System. If provided, layer geometries are reprojected.</param>
@@ -43,16 +44,23 @@ namespace DynamoNTS.IO
                 throw new FileNotFoundException($"Shapefile not found: '{shpPath}'");
 
             NtsCoordinateSystem? sourceCrs = null;
+            string crsSource = "none";
             string prjPath = Path.ChangeExtension(shpPath, ".prj");
+
             if (File.Exists(prjPath))
             {
                 try
                 {
                     sourceCrs = NtsCoordinateSystem.ByPrjFile(prjPath);
+                    crsSource = "prj";
                 }
-                catch
+                catch (Exception ex)
                 {
                     sourceCrs = null;
+                    crsSource = "unreadable";
+                    System.Diagnostics.Trace.TraceWarning(
+                        $"[Shapefile.Read] Warning: Failed to parse projection file '{prjPath}'. " +
+                        $"The file may be corrupted, empty, or formatted with an unsupported projection syntax. Error: {ex.Message}");
                 }
             }
 
@@ -61,7 +69,6 @@ namespace DynamoNTS.IO
             {
                 foreach (var dbfField in reader.Fields)
                 {
-                    // B14: Infiere si el campo numérico es entero inspeccionando escala decimal
                     var fieldType = MapFieldType(dbfField);
                     fields.Add(NtsField.ByNameAndType(dbfField.Name, fieldType, dbfField.Length));
                 }
@@ -97,23 +104,29 @@ namespace DynamoNTS.IO
 
             string layerName = Path.GetFileNameWithoutExtension(shpPath);
 
-            // B09: Retornar layer vacío si el shapefile no contiene geometrías/registros
             if (features.Count == 0)
             {
                 var effectiveCrs = crsOverride ?? sourceCrs;
-                return NtsLayer.CreateEmpty(layerName, schema, effectiveCrs);
+                var emptyLayer = NtsLayer.CreateEmpty(layerName, schema, effectiveCrs);
+                emptyLayer.CrsSource = crsOverride != null ? "override" : crsSource;
+                return emptyLayer;
             }
 
             var nativeLayer = NtsLayer.ByFeatures(features, layerName, sourceCrs, schema);
+            nativeLayer.CrsSource = crsSource;
 
             if (crsOverride != null)
             {
                 if (sourceCrs != null)
                 {
-                    return nativeLayer.Reproject(crsOverride);
+                    var reprojected = nativeLayer.Reproject(crsOverride);
+                    reprojected.CrsSource = "override";
+                    return reprojected;
                 }
 
-                return NtsLayer.ByFeatures(features, layerName, crsOverride, schema);
+                var overriddenLayer = NtsLayer.ByFeatures(features, layerName, crsOverride, schema);
+                overriddenLayer.CrsSource = "override";
+                return overriddenLayer;
             }
 
             return nativeLayer;
