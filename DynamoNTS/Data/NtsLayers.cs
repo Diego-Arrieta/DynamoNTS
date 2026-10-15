@@ -21,7 +21,6 @@ namespace DynamoNTS.Data
         [IsVisibleInDynamoLibrary(false)]
         private readonly Lazy<STRtree<NtsFeature>> _spatialIndex;
 
-        // 1. Campo privado inmutable (aquí vive la lista interna)
         [IsVisibleInDynamoLibrary(false)]
         private readonly IReadOnlyList<NtsFeature> _features;
 
@@ -506,26 +505,58 @@ namespace DynamoNTS.Data
 
         private static NtsGeometryType DetectGeometryType(IEnumerable<NtsFeature> features)
         {
-            NtsGeometryType? detected = null;
+            bool hasPoint = false, hasMultiPoint = false;
+            bool hasLine = false, hasMultiLine = false;
+            bool hasPoly = false, hasMultiPoly = false;
 
             foreach (var f in features)
             {
                 if (f?.Geometry == null || f.Geometry.InternalGeometry.IsEmpty) continue;
 
-                var current = f.Geometry.GeometryType;
-                if (current == NtsGeometryType.None) continue;
-
-                if (detected == null)
+                switch (f.Geometry.GeometryType)
                 {
-                    detected = current;
+                    case NtsGeometryType.Point:
+                        hasPoint = true;
+                        break;
+                    case NtsGeometryType.MultiPoint:
+                        hasMultiPoint = true;
+                        break;
+                    case NtsGeometryType.LineString:
+                        hasLine = true;
+                        break;
+                    case NtsGeometryType.MultiLineString:
+                        hasMultiLine = true;
+                        break;
+                    case NtsGeometryType.Polygon:
+                        hasPoly = true;
+                        break;
+                    case NtsGeometryType.MultiPolygon:
+                        hasMultiPoly = true;
+                        break;
+                    default:
+                        return NtsGeometryType.Mixed;
                 }
-                else if (detected.Value != current)
+
+                int dimensions = (hasPoint || hasMultiPoint ? 1 : 0)
+                                 + (hasLine || hasMultiLine ? 1 : 0)
+                                 + (hasPoly || hasMultiPoly ? 1 : 0);
+
+                if (dimensions > 1)
                 {
                     return NtsGeometryType.Mixed;
                 }
             }
 
-            return detected ?? NtsGeometryType.None;
+            if (hasPoly || hasMultiPoly)
+                return hasMultiPoly ? NtsGeometryType.MultiPolygon : NtsGeometryType.Polygon;
+
+            if (hasLine || hasMultiLine)
+                return hasMultiLine ? NtsGeometryType.MultiLineString : NtsGeometryType.LineString;
+
+            if (hasPoint || hasMultiPoint)
+                return hasMultiPoint ? NtsGeometryType.MultiPoint : NtsGeometryType.Point;
+
+            return NtsGeometryType.None;
         }
 
         private static STRtree<NtsFeature> BuildSpatialIndex(IEnumerable<NtsFeature> features)

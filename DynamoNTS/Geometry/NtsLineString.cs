@@ -1,5 +1,4 @@
 ﻿using Autodesk.DesignScript.Runtime;
-using NetTopologySuite.Algorithm;
 using System;
 using System.Collections.Generic;
 using System.Linq;
@@ -37,7 +36,7 @@ namespace DynamoNTS.Geometry
         /// Creates an NtsLineString from a list of NtsPoints, preserving 3D coordinates if any point has elevation.
         /// </summary>
         /// <param name="points">List of topological NTS points.</param>
-        /// <returns name="NtsLineString">The equivalent topological line string in NTS.</returns>
+        /// <returns name="lineString">The equivalent topological line string in NTS.</returns>
         public static NtsLineString ByNtsPoints(IEnumerable<NtsPoint> points)
         {
             if (points == null) throw new ArgumentNullException(nameof(points));
@@ -63,37 +62,72 @@ namespace DynamoNTS.Geometry
         }
 
         /// <summary>
-        /// Creates an NtsLineString by extracting the vertices of a Dynamo PolyCurve.
+        /// Creates an NtsLineString by extracting the vertices of a Dynamo PolyCurve,
+        /// discretizing curved segments (such as arcs) according to a sagitta (chord height) tolerance.
         /// </summary>
         /// <param name="polyCurve">The base Dynamo PolyCurve.</param>
         /// <param name="keepZ">If true, preserves elevation (Z) from curves. Defaults to false (2D).</param>
-        /// <returns name="NtsLineString">The topological line string in NTS.</returns>
+        /// <param name="tolerance">Maximum allowable sagitta (chord height) when tessellating curves. Defaults to 0.01.</param>
+        /// <returns name="lineString">The topological line string in NTS.</returns>
         public static NtsLineString ByPolyCurve(
             DynGeometry.PolyCurve polyCurve,
-            [DefaultArgument("false")] bool keepZ = false)
+            [DefaultArgument("false")] bool keepZ = false,
+            [DefaultArgument("0.01")] double tolerance = 0.01)
         {
             if (polyCurve == null) throw new ArgumentNullException(nameof(polyCurve));
+
+            if (double.IsNaN(tolerance) || tolerance <= 0)
+            {
+                tolerance = 0.01;
+            }
 
             var coordinates = new List<NtsGeometries.Coordinate>();
             var curves = polyCurve.Curves();
 
             foreach (var curve in curves)
             {
-                var start = curve.StartPoint;
-                if (keepZ)
-                    coordinates.Add(new NtsGeometries.CoordinateZ(start.X, start.Y, start.Z));
+                if (curve is DynGeometry.Line)
+                {
+                    var start = curve.StartPoint;
+                    AddCoordinate(coordinates, start, keepZ);
+                    start.Dispose();
+                }
+                else if (curve is DynGeometry.Arc arc)
+                {
+                    int segments = CalculateArcSegments(arc.Radius, arc.SweepAngle, tolerance);
+                    for (int i = 0; i < segments; i++)
+                    {
+                        double t = (double)i / segments;
+                        var pt = arc.PointAtParameter(t);
+                        AddCoordinate(coordinates, pt, keepZ);
+                        pt.Dispose();
+                    }
+                }
+                else if (curve is DynGeometry.Circle circle)
+                {
+                    int segments = Math.Max(8, CalculateArcSegments(circle.Radius, 360.0, tolerance));
+                    for (int i = 0; i < segments; i++)
+                    {
+                        double t = (double)i / segments;
+                        var pt = circle.PointAtParameter(t);
+                        AddCoordinate(coordinates, pt, keepZ);
+                        pt.Dispose();
+                    }
+                }
                 else
-                    coordinates.Add(new NtsGeometries.Coordinate(start.X, start.Y));
+                {
+                    var p0 = curve.StartPoint;
+                    var p1 = curve.EndPoint;
+                    SampleCurveAdaptive(curve, 0.0, 1.0, p0, p1, tolerance, keepZ, coordinates, 0);
+                    p0.Dispose();
+                    p1.Dispose();
+                }
 
-                start.Dispose();
                 curve.Dispose();
             }
 
             var endPoint = polyCurve.EndPoint;
-            if (keepZ)
-                coordinates.Add(new NtsGeometries.CoordinateZ(endPoint.X, endPoint.Y, endPoint.Z));
-            else
-                coordinates.Add(new NtsGeometries.Coordinate(endPoint.X, endPoint.Y));
+            AddCoordinate(coordinates, endPoint, keepZ);
             endPoint.Dispose();
 
             var coordList = new NtsGeometries.CoordinateList();
@@ -113,7 +147,7 @@ namespace DynamoNTS.Geometry
         /// <summary>
         /// Converts the NtsLineString back into the Dynamo visual environment as a PolyCurve.
         /// </summary>
-        /// <returns name="PolyCurve">A native Dynamo PolyCurve.</returns>
+        /// <returns name="polyCurve">A native Dynamo PolyCurve.</returns>
         public DynGeometry.PolyCurve ToPolyCurve()
         {
             var points = new List<DynGeometry.Point>();
@@ -157,6 +191,94 @@ namespace DynamoNTS.Geometry
         /// Gets the ending point of the LineString.
         /// </summary>
         public NtsPoint EndPoint => new NtsPoint(InternalLineString.EndPoint);
+
+        #endregion
+
+        #region Internal Discretization Helpers
+
+        private static int CalculateArcSegments(double radius, double sweepAngleDegrees, double tolerance)
+        {
+            if (radius <= 1e-6) return 1;
+
+            double sweepRad = Math.Abs(sweepAngleDegrees) * (Math.PI / 180.0);
+            if (sweepRad <= 1e-6) return 1;
+
+            double ratio = tolerance / radius;
+            double cosHalf = Math.Max(-1.0, Math.Min(1.0, 1.0 - ratio));
+            double dTheta = 2.0 * Math.Acos(cosHalf);
+
+            if (dTheta <= 1e-6) return 1;
+
+            int segments = (int)Math.Ceiling(sweepRad / dTheta);
+            return Math.Max(1, Math.Min(segments, 1000));
+        }
+
+        private static void SampleCurveAdaptive(
+            DynGeometry.Curve curve,
+            double t0,
+            double t1,
+            DynGeometry.Point p0,
+            DynGeometry.Point p1,
+            double tolerance,
+            bool keepZ,
+            List<NtsGeometries.Coordinate> coordinates,
+            int depth)
+        {
+            double tm = (t0 + t1) * 0.5;
+            var pm = curve.PointAtParameter(tm);
+
+            double sagitta = DistancePointToSegment(pm, p0, p1);
+
+            if (sagitta > tolerance && depth < 8)
+            {
+                SampleCurveAdaptive(curve, t0, tm, p0, pm, tolerance, keepZ, coordinates, depth + 1);
+                SampleCurveAdaptive(curve, tm, t1, pm, p1, tolerance, keepZ, coordinates, depth + 1);
+            }
+            else
+            {
+                AddCoordinate(coordinates, p0, keepZ);
+            }
+
+            pm.Dispose();
+        }
+
+        private static double DistancePointToSegment(DynGeometry.Point p, DynGeometry.Point a, DynGeometry.Point b)
+        {
+            double abx = b.X - a.X;
+            double aby = b.Y - a.Y;
+            double abz = b.Z - a.Z;
+
+            double apx = p.X - a.X;
+            double apy = p.Y - a.Y;
+            double apz = p.Z - a.Z;
+
+            double abLenSq = abx * abx + aby * aby + abz * abz;
+            if (abLenSq < 1e-12)
+            {
+                return Math.Sqrt(apx * apx + apy * apy + apz * apz);
+            }
+
+            double t = (apx * abx + apy * aby + apz * abz) / abLenSq;
+            t = Math.Max(0.0, Math.Min(1.0, t));
+
+            double projX = a.X + t * abx;
+            double projY = a.Y + t * aby;
+            double projZ = a.Z + t * abz;
+
+            double dx = p.X - projX;
+            double dy = p.Y - projY;
+            double dz = p.Z - projZ;
+
+            return Math.Sqrt(dx * dx + dy * dy + dz * dz);
+        }
+
+        private static void AddCoordinate(List<NtsGeometries.Coordinate> coordinates, DynGeometry.Point pt, bool keepZ)
+        {
+            if (keepZ)
+                coordinates.Add(new NtsGeometries.CoordinateZ(pt.X, pt.Y, pt.Z));
+            else
+                coordinates.Add(new NtsGeometries.Coordinate(pt.X, pt.Y));
+        }
 
         #endregion
     }
